@@ -1,0 +1,30 @@
+from sqlalchemy.orm import Session
+from db.models import Analysis
+
+def save_analysis(
+    db: Session,
+    source_type: str,
+    source_name: str | None,
+    extracted_data: dict,
+    risk_score: int,
+    risk_level: str,
+    risk_reasons: list,
+    expected_roi_percent: float,
+    rough_cash_gap: float | None,
+    verdict: str,
+) -> Analysis:
+    row = Analysis(
+        source_type=source_type,
+        source_name=source_name,
+        extracted_data=extracted_data,
+        risk_score=risk_score,
+        risk_level=risk_level,
+        risk_reasons=risk_reasons,
+        expected_roi_percent=expected_roi_percent,
+        rough_cash_gap=rough_cash_gap,
+        verdict=verdict,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
