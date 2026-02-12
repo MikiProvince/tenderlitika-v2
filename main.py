@@ -13,21 +13,18 @@ def health_check():
 
 @app.post("/analyze")
 def analyze_tender(data: TenderInput):
-    extracted = extract_tender_data(data.text)
+    try:
+        extracted = extract_tender_data(data.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
 
-    nmck = extracted.get("nmck")
+    risk_score, risk_level, reasons = calculate_risk(extracted)
+    roi, cash_gap = calculate_financials(extracted, data.cost_price, data.planned_margin_percent)
 
-    risk_score, risk_level = calculate_risk(nmck)
-
-    roi = calculate_financials(
-        nmck,
-        data.cost_price,
-        data.planned_margin_percent
-    )
-
-    if risk_score >= 5:
+    # Вердикт на базе риска + ROI
+    if risk_score >= 7:
         verdict = "Не рекомендуется участвовать"
-    elif risk_score >= 3:
+    elif risk_score >= 4:
         verdict = "Участвовать с осторожностью"
     else:
         verdict = "Можно участвовать"
@@ -36,6 +33,8 @@ def analyze_tender(data: TenderInput):
         "extracted_data": extracted,
         "risk_score": risk_score,
         "risk_level": risk_level,
-        "expected_roi_percent": roi,
+        "risk_reasons": reasons,
+        "expected_roi_percent": round(roi, 2),
+        "rough_cash_gap": None if cash_gap is None else round(cash_gap, 2),
         "verdict": verdict
     }
