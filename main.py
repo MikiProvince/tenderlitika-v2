@@ -11,16 +11,28 @@ from sqlalchemy.orm import Session
 from db.deps import get_db
 from services.analysis_store import save_analysis
 from db.models import Analysis
+from api.auth_routes import router as auth_router
+from services.current_user import get_current_user
+from services.limits import check_monthly_quota
+from db.models import User
+
+
+
 
 
 app = FastAPI()
+
+app.include_router(auth_router)
 
 @app.get("/")
 def health_check():
     return {"status": "Tenderlitika V2 is alive"}
 
 @app.post("/analyze")
-def analyze_tender(data: TenderInput, db: Session = Depends(get_db)):
+def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    
+    check_monthly_quota(db, user)
+
     extracted = extract_tender_data(data.text)
 
     risk_score, risk_level, reasons = calculate_risk(extracted)
@@ -35,6 +47,7 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db)):
 
     row = save_analysis(
         db=db,
+        user_id=user.id,
         source_type="text",
         source_name=None,
         extracted_data=extracted,
@@ -63,6 +76,7 @@ async def analyze_tender_pdf(
     cost_price: float = Form(...),
     planned_margin_percent: float = Form(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     # 1) Проверка файла
     if not file.filename or not file.filename.lower().endswith(".pdf"):
@@ -105,6 +119,7 @@ async def analyze_tender_pdf(
     # 6) Сохраняем в БД (ВАЖНО: source_type="pdf", source_name=file.filename)
     row = save_analysis(
         db=db,
+        user_id=user.id,
         source_type="pdf",
         source_name=file.filename,
         extracted_data=extracted,
