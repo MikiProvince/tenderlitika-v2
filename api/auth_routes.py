@@ -13,13 +13,22 @@ router = APIRouter()
 @router.post("/signup")
 def signup(email: str, password: str, db: Session = Depends(get_db)):
     email = email.strip().lower()
+    
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Invalid email")
+    
+    # bcrypt limit: 72 bytes
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=400,
+            detail="Password too long (max 72 bytes for bcrypt). Use a shorter password."
+    )
 
     exists = db.query(User).filter(User.email == email).first()
     if exists:
         raise HTTPException(status_code=409, detail="Email already exists")
-
+    
+    
     u = User(email=email, password_hash=hash_password(password), plan="free", is_active=True)
     db.add(u)
     db.commit()
