@@ -1,16 +1,99 @@
 "use client";
 
 import { AppShell } from "@/components/shell/AppShell";
-import { useState } from "react";
-import Link from "next/link";
+import { apiFetch } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
-type Mode = "pdf" | "text";
+type AnalyzeResponse = {
+  analysis_id: number;
+  extracted_data: Record<string, any>;
+  risk_score: number;
+  risk_level: string;
+  risk_reasons: string[];
+  expected_roi_percent: number;
+  rough_cash_gap: number | null;
+  verdict: string;
+};
+
+const LS_COST = "tlk_cost_price";
+const LS_MARGIN = "tlk_margin";
 
 export default function NewAnalysisPage() {
-  const [mode, setMode] = useState<Mode>("pdf");
-  const [cost, setCost] = useState("10000000");
-  const [margin, setMargin] = useState("15");
+  const router = useRouter();
+
   const [text, setText] = useState("");
+  const [cost, setCost] = useState("1000000");
+  const [margin, setMargin] = useState("15");
+
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const c = localStorage.getItem(LS_COST);
+    const m = localStorage.getItem(LS_MARGIN);
+    if (c) setCost(c);
+    if (m) setMargin(m);
+  }, []);
+
+  function validate() {
+    const c = Number(cost);
+    const m = Number(margin);
+    if (!text.trim()) return "Вставь текст тендера.";
+    if (!Number.isFinite(c) || c <= 0) return "Себестоимость должна быть > 0.";
+    if (!Number.isFinite(m) || m < 0 || m > 100) return "Маржа должна быть от 0 до 100.";
+    return null;
+  }
+
+  async function onAnalyze() {
+    const v = validate();
+    if (v) {
+      setError(v);
+      return;
+    }
+
+    setError(null);
+    setLoading(true);
+
+    try {
+      localStorage.setItem(LS_COST, cost);
+      localStorage.setItem(LS_MARGIN, margin);
+
+      setStep("Извлекаем условия…");
+
+      const payload = {
+        text: text.trim(),
+        cost_price: Number(cost),
+        planned_margin_percent: Number(margin),
+      };
+
+      setStep("Считаем риски и деньги…");
+
+      const res = await apiFetch<AnalyzeResponse>("/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      setStep("Готово. Открываем отчёт…");
+      router.push(`/analysis/${res.analysis_id}`);
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+
+      // дружелюбные ошибки
+      if (msg.includes("Missing X-API-Key") || msg.includes("Invalid API key") || msg.includes("401")) {
+        setError("Похоже, API key не задан или неверный. Зайди в /login и вставь ключ.");
+      } else if (msg.includes("Quota exceeded") || msg.includes("429")) {
+        setError("Лимит анализов исчерпан (429). Подожди сброс лимита или обнови тариф.");
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
+      setStep(null);
+    }
+  }
 
   return (
     <AppShell>
@@ -18,54 +101,25 @@ export default function NewAnalysisPage() {
         <div className="rounded-2xl border bg-white p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-xl font-semibold">Новый анализ</h1>
+              <h1 className="text-xl font-semibold">Новый анализ (текст)</h1>
               <p className="mt-1 text-sm text-black/60">
-                Загрузите PDF или вставьте текст. Введите себестоимость и маржу — получите вердикт.
+                Вставь текст тендера. Себестоимость и маржа нужны для расчёта ROI и кассового разрыва.
               </p>
             </div>
-            <Link href="/history" className="text-sm text-black/60 hover:text-black">
-              → История
-            </Link>
           </div>
 
-          <div className="mt-5 flex gap-2">
-            <button
-              onClick={() => setMode("pdf")}
-              className={[
-                "rounded-xl px-3 py-2 text-sm",
-                mode === "pdf" ? "bg-black text-white" : "border hover:bg-black/5",
-              ].join(" ")}
-            >
-              PDF
-            </button>
-            <button
-              onClick={() => setMode("text")}
-              className={[
-                "rounded-xl px-3 py-2 text-sm",
-                mode === "text" ? "bg-black text-white" : "border hover:bg-black/5",
-              ].join(" ")}
-            >
-              Текст
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
             <div className="rounded-2xl border p-4">
-              {mode === "pdf" ? (
-                <div className="rounded-xl border-2 border-dashed p-6 text-center text-sm text-black/60">
-                  Dropzone (позже подключим)
-                  <div className="mt-1 text-xs text-black/40">
-                    Если документ — скан, понадобится OCR
-                  </div>
-                </div>
-              ) : (
-                <textarea
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  placeholder="Вставьте текст тендера сюда…"
-                  className="h-40 w-full resize-none rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
-                />
-              )}
+              <label className="block text-xs font-medium text-black/60">Текст тендера</label>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Вставь сюда текст документа/закупки…"
+                className="mt-2 h-56 w-full resize-none rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
+              />
+              <div className="mt-2 text-xs text-black/50">
+                Совет: можно вставлять кусками — главное, чтобы были сроки/оплата/обеспечение/штрафы.
+              </div>
             </div>
 
             <div className="rounded-2xl border p-4">
@@ -73,22 +127,34 @@ export default function NewAnalysisPage() {
               <input
                 value={cost}
                 onChange={(e) => setCost(e.target.value)}
-                className="mt-1 w-full rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
+                className="mt-2 w-full rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
               />
 
               <label className="mt-4 block text-xs font-medium text-black/60">Маржа (%)</label>
               <input
                 value={margin}
                 onChange={(e) => setMargin(e.target.value)}
-                className="mt-1 w-full rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
+                className="mt-2 w-full rounded-xl border p-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
               />
 
+              {error && (
+                <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+
               <button
-                className="mt-4 w-full rounded-xl bg-black px-4 py-3 text-sm text-white hover:bg-black/90"
-                onClick={() => alert("Дальше подключим к /analyze и /analyze/pdf 🙂")}
+                disabled={loading}
+                className={[
+                  "mt-4 w-full rounded-xl px-4 py-3 text-sm text-white",
+                  loading ? "bg-black/50" : "bg-black hover:bg-black/90",
+                ].join(" ")}
+                onClick={onAnalyze}
               >
-                Анализировать
+                {loading ? "Анализируем…" : "Анализировать"}
               </button>
+
+              {step && <div className="mt-2 text-xs text-black/60">{step}</div>}
 
               <div className="mt-2 text-xs text-black/50">
                 Результат сохранится в истории автоматически.
