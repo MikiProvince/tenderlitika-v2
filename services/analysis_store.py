@@ -13,6 +13,10 @@ def save_analysis(
     expected_roi_percent: float,
     rough_cash_gap: float | None,
     verdict: str,
+    # ✅ NEW
+    input_cost_price: float | None = None,
+    input_margin_percent: float | None = None,
+    safe_cost_price: float | None = None,
 ) -> Analysis:
     row = Analysis(
         user_id=user_id,
@@ -25,6 +29,10 @@ def save_analysis(
         expected_roi_percent=expected_roi_percent,
         rough_cash_gap=rough_cash_gap,
         verdict=verdict,
+        # ✅ NEW
+        input_cost_price=input_cost_price,
+        input_margin_percent=input_margin_percent,
+        safe_cost_price=safe_cost_price,
     )
     db.add(row)
     db.commit()

@@ -3,7 +3,7 @@ from models.tender import TenderInput
 from models.report import AnalysisReport
 from core.extractor import extract_tender_data
 from core.risk_engine import calculate_risk
-from core.financial_model import calculate_financials
+from core.financial_model import calculate_financials, calculate_safe_cost_price
 from fastapi import UploadFile, File, HTTPException, Form
 from services.pdf_text import extract_text_from_pdf_bytes
 from fastapi import Depends
@@ -17,7 +17,6 @@ from services.limits import check_monthly_quota
 from db.models import User
 from fastapi.middleware.cors import CORSMiddleware
 import inspect
-
 
 app = FastAPI()
 
@@ -46,7 +45,13 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User 
     extracted = extract_tender_data(data.text)
 
     risk_score, risk_level, reasons = calculate_risk(extracted)
-    roi, cash_gap = calculate_financials(extracted, data.cost_price, data.planned_margin_percent)
+    roi, cash_gap = calculate_financials(
+        extracted, 
+        data.cost_price, 
+        data.planned_margin_percent
+    )
+
+    safe_cost = calculate_safe_cost_price(extracted)
 
     if risk_score >= 7:
         verdict = "Не рекомендуется участвовать"
@@ -67,6 +72,10 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User 
         expected_roi_percent=round(roi, 2),
         rough_cash_gap=None if cash_gap is None else round(cash_gap, 2),
         verdict=verdict,
+        # ✅ NEW
+        input_cost_price=float(data.cost_price),
+        input_margin_percent=float(data.planned_margin_percent),
+        safe_cost_price=safe_cost,
     )
 
     return {
@@ -77,6 +86,7 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User 
         "risk_reasons": reasons,
         "expected_roi_percent": round(roi, 2),
         "rough_cash_gap": None if cash_gap is None else round(cash_gap, 2),
+        "safe_cost": safe_cost,
         "verdict": verdict,
     }
 
@@ -119,6 +129,8 @@ async def analyze_tender_pdf(
     risk_score, risk_level, reasons = calculate_risk(extracted)
     roi, cash_gap = calculate_financials(extracted, cost_price, planned_margin_percent)
 
+    safe_cost = calculate_safe_cost_price(extracted)
+
     if risk_score >= 7:
         verdict = "Не рекомендуется участвовать"
     elif risk_score >= 4:
@@ -139,6 +151,10 @@ async def analyze_tender_pdf(
         expected_roi_percent=round(roi, 2),
         rough_cash_gap=None if cash_gap is None else round(cash_gap, 2),
         verdict=verdict,
+        # ✅ NEW
+        input_cost_price=float(cost_price),
+        input_margin_percent=float(planned_margin_percent),
+        safe_cost_price=safe_cost,
     )
 
     # 7) Ответ
@@ -155,6 +171,7 @@ async def analyze_tender_pdf(
         "risk_reasons": reasons,
         "expected_roi_percent": round(roi, 2),
         "rough_cash_gap": None if cash_gap is None else round(cash_gap, 2),
+        "safe_cost_price": safe_cost,
         "verdict": verdict,
     }
 
@@ -171,6 +188,9 @@ def list_analyses(db: Session = Depends(get_db), limit: int = 20):
             "expected_roi_percent": r.expected_roi_percent,
             "rough_cash_gap": r.rough_cash_gap,
             "verdict": r.verdict,
+            "input_cost_price": r.input_cost_price,
+            "input_margin_percent": r.input_margin_percent,
+            "safe_cost_price": r.safe_cost_price,
             "created_at": r.created_at,
         }
         for r in rows
@@ -194,5 +214,8 @@ def get_analysis(analysis_id: int, db: Session = Depends(get_db)):
         "expected_roi_percent": r.expected_roi_percent,
         "rough_cash_gap": r.rough_cash_gap,
         "verdict": r.verdict,
+        "input_cost_price": r.input_cost_price,
+        "input_margin_percent": r.input_margin_percent,
+        "safe_cost_price": r.safe_cost_price,
         "created_at": r.created_at,
     }

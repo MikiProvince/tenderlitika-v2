@@ -134,20 +134,16 @@ def extract_with_llm(text: str) -> dict:
 
 # ---------- Regex fallbacks ----------
 
-def extract_nmck_regex(text: str) -> Optional[float]:
-    t = text or ""
+def extract_nmck_regex(text: str):
+    pattern = r'(\d[\d\s]{3,})(?:\s*)(?:руб(?:\.|лей|ля|ль)?|₽)'
+    match = re.search(pattern, text.lower())
 
-    # 50 000 000 руб / 50 000 000,00 рублей / 50 000 000 ₽
-    m = re.search(r"(\d[\d\s\u00a0]{6,}(?:[.,]\d{1,2})?)\s*(?:руб(?:\.|лей|ля)?|₽)", t, flags=re.IGNORECASE)
-    if m:
-        return _safe_float(m.group(1))
-
-    # 50 млн руб
-    m2 = re.search(r"(\d+(?:[.,]\d+)?)\s*(млн|миллион(?:ов|а)?)\s*(?:руб(?:\.|лей|ля)?|₽)?", t, flags=re.IGNORECASE)
-    if m2:
-        val = _safe_float(m2.group(1))
-        if val is not None:
-            return val * 1_000_000
+    if match:
+        num = match.group(1).replace(" ", "")
+        try:
+            return float(num)
+        except:
+            return None
 
     return None
 

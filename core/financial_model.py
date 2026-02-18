@@ -21,3 +21,38 @@ def calculate_financials(extracted: Dict[str, Any], cost_price: float, margin_pe
         cash_gap = daily_burn * float(payment_terms_days)
 
     return expected_roi, cash_gap
+
+def calculate_safe_cost_price(extracted: dict) -> float | None:
+
+    nmck = extracted.get("nmck")
+    if not isinstance(nmck, (int, float)):
+        return None
+
+    contract_sec = extracted.get("contract_security_percent") or 0
+
+    # базовая безопасная маржа
+    safety_margin = 0.10
+
+    # нагрузка гарантий (не 1:1, потому что это не полная потеря денег)
+    guarantee_load = (contract_sec / 100) * 0.5
+
+    # ловушки
+    trap_penalty = 0.0
+
+    if extracted.get("payment_after_full_delivery"):
+        trap_penalty += 0.05
+
+    if extracted.get("delivery_by_customer_requests"):
+        trap_penalty += 0.05
+
+    if extracted.get("supplier_must_hold_stock"):
+        trap_penalty += 0.03
+
+    if extracted.get("has_vague_acceptance_terms"):
+        trap_penalty += 0.04
+
+    total_risk_buffer = safety_margin + guarantee_load + trap_penalty
+
+    safe_cost = nmck * (1 - total_risk_buffer)
+
+    return round(safe_cost, 2)
