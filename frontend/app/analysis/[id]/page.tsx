@@ -3,7 +3,8 @@
 import { AppShell } from "@/components/shell/AppShell";
 import { apiFetch } from "@/lib/api";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { use, useEffect, useState } from "react";
+
 
 type AnalysisDetail = {
   id: number;
@@ -29,17 +30,18 @@ function VerdictBadge({ verdict }: { verdict: string }) {
   return <span className={`inline-flex rounded-full border px-3 py-1 text-xs ${cls}`}>{verdict}</span>;
 }
 
-export default function AnalysisDetailPage({ params }: { params: { id: string } }) {
+export default function AnalysisDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const [data, setData] = useState<AnalysisDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const { id } = use(params);
 
   useEffect(() => {
-    apiFetch<AnalysisDetail>(`/analyses/${params.id}`)
+    apiFetch<AnalysisDetail>(`/analyses/${id}`)
       .then(setData)
       .catch((e) => setError(String(e?.message || e)))
       .finally(() => setLoading(false));
-  }, [params.id]);
+  }, [id]);
 
   return (
     <AppShell>
@@ -47,7 +49,7 @@ export default function AnalysisDetailPage({ params }: { params: { id: string } 
         <div className="rounded-2xl border bg-white p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-xl font-semibold">Анализ #{params.id}</h1>
+              <h1 className="text-xl font-semibold">Анализ #{id}</h1>
               <p className="mt-1 text-sm text-black/60">
                 Вердикт, метрики и причины риска.
               </p>

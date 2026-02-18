@@ -16,6 +16,7 @@ from services.current_user import get_current_user
 from services.limits import check_monthly_quota
 from db.models import User
 from fastapi.middleware.cors import CORSMiddleware
+import inspect
 
 
 app = FastAPI()
