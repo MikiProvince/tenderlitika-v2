@@ -1,0 +1,15 @@
+Продолжаем разработку Tenderlitika V2.
+
+FastAPI + PostgreSQL backend, Next.js App Router frontend.
+Есть users, API keys, auth, POST /analyze, сохранение анализов, history UI, analysis page, CORS.
+Проект локально: D:\DEV\tenderlitika_v2
+
+Считай это continuation production SaaS build.
+Продолжаем с текущего этапа разработки.
+
+
+Tenderlitika V2 continuation.
+FastAPI + Postgres + Next.js SaaS.
+Auth + API keys + analyze + history already working.
+Local path D:\DEV\tenderlitika_v2.
+Proceed with development from current state.
