@@ -1,5 +1,23 @@
 from typing import Any, Dict, List, Tuple
 
+
+
+def _fmt_rub(x: float | int | None) -> str:
+    if x is None:
+        return "—"
+    try:
+        return f"{int(round(float(x))):,}".replace(",", " ") + " ₽"
+    except:
+        return "—"
+
+def _pct_amount(nmck: Any, pct: Any) -> float | None:
+    if not isinstance(nmck, (int, float)) or not isinstance(pct, (int, float)):
+        return None
+    return float(nmck) * float(pct) / 100.0
+
+def _is_num(x: Any) -> bool:
+    return isinstance(x, (int, float))
+
 def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
     """
     Возвращает:
@@ -23,6 +41,25 @@ def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
     payment_after_full_delivery = bool(extracted.get("payment_after_full_delivery"))
     delivery_by_customer_requests = bool(extracted.get("delivery_by_customer_requests"))
     supplier_must_hold_stock = bool(extracted.get("supplier_must_hold_stock"))
+
+    # Денежные оценки (если известна НМЦК)
+    bid_sec_amount = _pct_amount(nmck, bid_sec)
+    contract_sec_amount = _pct_amount(nmck, contract_sec)
+
+    # Простейшая оценка "заморозки оборотки" = обеспечение + отсутствие аванса (если явно 0)
+    frozen_estimate = 0.0
+    frozen_parts: list[str] = []
+
+    if bid_sec_amount is not None:
+        frozen_estimate += bid_sec_amount
+        frozen_parts.append(f"обеспечение заявки ~ {_fmt_rub(bid_sec_amount)}")
+
+    if contract_sec_amount is not None:
+        frozen_estimate += contract_sec_amount
+        frozen_parts.append(f"обеспечение контракта ~ {_fmt_rub(contract_sec_amount)}")
+
+    # Если аванс = 0, а НМЦК есть — это не деньги "замороженные", но усиливает кассовую нагрузку.
+    no_advance = (_is_num(advance) and float(advance) == 0.0)
 
     # 1) Данные не извлечены — уже риск (но не переусердствовать)
     if nmck is None:
@@ -79,10 +116,18 @@ def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
     # 6) Обеспечение (грубая эвристика: высокие проценты = заморозка денег/гарантии)
     if isinstance(contract_sec, (int, float)) and contract_sec >= 10:
         score += 1
-        reasons.append(f"Высокое обеспечение контракта: {contract_sec}% — нагрузка на финансы/гарантии.")
+        msg = f"Высокое обеспечение контракта: {contract_sec}%"
+        if contract_sec_amount is not None:
+            msg += f" (~{_fmt_rub(contract_sec_amount)})"
+        msg += " — нагрузка на финансы/гарантии."
+        reasons.append(msg)
     if isinstance(bid_sec, (int, float)) and bid_sec >= 5:
         score += 1
-        reasons.append(f"Высокое обеспечение заявки: {bid_sec}% — финансовая нагрузка.")
+        msg = f"Высокое обеспечение заявки: {bid_sec}%"
+        if bid_sec_amount is not None:
+            msg += f" (~{_fmt_rub(bid_sec_amount)})"
+        msg += " — финансовая нагрузка."
+        reasons.append(msg)
 
     # 7) Размытая приемка
     if vague_acceptance is True:
@@ -107,6 +152,15 @@ def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
     if payment_after_full_delivery and delivery_by_customer_requests:
         score += 1
         reasons.append("Комбо-капкан: оплата после полной поставки + поставка по заявкам — высокий риск долгой заморозки оборотки.")
+
+    # Итоговое денежное пояснение (если есть что сказать)
+    if frozen_parts:
+        msg = "Оценка заморозки оборотных средств: " + "; ".join(frozen_parts) + "."
+        if no_advance:
+            msg += " Аванса нет — потребуется больше оборотки."
+        if payment_after_full_delivery or delivery_by_customer_requests:
+            msg += " Условия оплаты/поставки могут дополнительно растянуть возврат денег."
+        reasons.append(msg)
 
     # нормализация
     if score < 0:
