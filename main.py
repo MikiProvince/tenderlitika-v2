@@ -1,23 +1,23 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+
 from models.tender import TenderInput
-from models.report import AnalysisReport
 from core.extractor import extract_tender_data
 from core.risk_engine import calculate_risk
 from core.financial_model import calculate_financials, calculate_safe_cost_price
-from fastapi import UploadFile, File, HTTPException, Form
+
 from services.pdf_text import extract_text_from_pdf_bytes
-from fastapi import Depends
-from sqlalchemy.orm import Session
-from db.deps import get_db
 from services.analysis_store import save_analysis
-from db.models import Analysis
-from api.auth_routes import router as auth_router
 from services.current_user import get_current_user
 from services.limits import check_monthly_quota
-from db.models import User
-from fastapi.middleware.cors import CORSMiddleware
-import inspect
-from core.danger_phrases import find_danger_phrases
+from services.danger_phrases import find_danger_phrases  # ✅ правильный импорт
+
+from db.deps import get_db
+from db.models import Analysis, User
+
+from api.auth_routes import router as auth_router
+
 
 app = FastAPI()
 
@@ -34,25 +34,32 @@ app.add_middleware(
 
 app.include_router(auth_router)
 
+
 @app.get("/")
 def health_check():
     return {"status": "Tenderlitika V2 is alive"}
 
+
 @app.post("/analyze")
-def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    
+def analyze_tender(
+    data: TenderInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     check_monthly_quota(db, user)
 
     extracted = extract_tender_data(data.text)
 
+    # ✅ danger phrases
     danger = find_danger_phrases(data.text)
     extracted["danger_phrases"] = danger
 
     risk_score, risk_level, reasons = calculate_risk(extracted)
+
     roi, cash_gap = calculate_financials(
-        extracted, 
-        data.cost_price, 
-        data.planned_margin_percent
+        extracted,
+        data.cost_price,
+        data.planned_margin_percent,
     )
 
     safe_cost = calculate_safe_cost_price(extracted)
@@ -76,10 +83,9 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User 
         expected_roi_percent=round(roi, 2),
         rough_cash_gap=None if cash_gap is None else round(cash_gap, 2),
         verdict=verdict,
-        # ✅ NEW
-        input_cost_price=float(data.cost_price),
-        input_margin_percent=float(data.planned_margin_percent),
-        safe_cost_price=safe_cost,
+        input_cost_price=float(data.cost_price) if data.cost_price is not None else None,
+        input_margin_percent=float(data.planned_margin_percent) if data.planned_margin_percent is not None else None,
+        safe_cost_price=None if safe_cost is None else float(safe_cost),
     )
 
     return {
@@ -90,9 +96,10 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User 
         "risk_reasons": reasons,
         "expected_roi_percent": round(roi, 2),
         "rough_cash_gap": None if cash_gap is None else round(cash_gap, 2),
-        "safe_cost": safe_cost,
+        "safe_cost_price": None if safe_cost is None else float(safe_cost),  # ✅ единый ключ
         "verdict": verdict,
     }
+
 
 @app.post("/analyze/pdf")
 async def analyze_tender_pdf(
@@ -102,6 +109,8 @@ async def analyze_tender_pdf(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    check_monthly_quota(db, user)
+
     # 1) Проверка файла
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a PDF file")
@@ -124,12 +133,12 @@ async def analyze_tender_pdf(
             detail="Не удалось извлечь текст из PDF. Похоже на скан (нужен OCR) или защищённый PDF."
         )
 
-    # 5) Прогоняем тот же pipeline, что и /analyze
+    # 5) Pipeline
     try:
         extracted = extract_tender_data(text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
-    
+
     danger = find_danger_phrases(text)
     extracted["danger_phrases"] = danger
 
@@ -145,7 +154,7 @@ async def analyze_tender_pdf(
     else:
         verdict = "Можно участвовать"
 
-    # 6) Сохраняем в БД (ВАЖНО: source_type="pdf", source_name=file.filename)
+    # 6) Сохраняем в БД
     row = save_analysis(
         db=db,
         user_id=user.id,
@@ -158,10 +167,9 @@ async def analyze_tender_pdf(
         expected_roi_percent=round(roi, 2),
         rough_cash_gap=None if cash_gap is None else round(cash_gap, 2),
         verdict=verdict,
-        # ✅ NEW
         input_cost_price=float(cost_price),
         input_margin_percent=float(planned_margin_percent),
-        safe_cost_price=safe_cost,
+        safe_cost_price=None if safe_cost is None else float(safe_cost),
     )
 
     # 7) Ответ
@@ -178,13 +186,25 @@ async def analyze_tender_pdf(
         "risk_reasons": reasons,
         "expected_roi_percent": round(roi, 2),
         "rough_cash_gap": None if cash_gap is None else round(cash_gap, 2),
-        "safe_cost_price": safe_cost,
+        "safe_cost_price": None if safe_cost is None else float(safe_cost),
         "verdict": verdict,
     }
 
+
 @app.get("/analyses")
-def list_analyses(db: Session = Depends(get_db), limit: int = 20):
-    rows = db.query(Analysis).order_by(Analysis.id.desc()).limit(limit).all()
+def list_analyses(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    limit: int = 20,
+):
+    safe_limit = max(1, min(limit, 100))
+    rows = (
+        db.query(Analysis)
+        .filter(Analysis.user_id == user.id)
+        .order_by(Analysis.id.desc())
+        .limit(safe_limit)
+        .all()
+    )
     return [
         {
             "id": r.id,
@@ -205,10 +225,18 @@ def list_analyses(db: Session = Depends(get_db), limit: int = 20):
 
 
 @app.get("/analyses/{analysis_id}")
-def get_analysis(analysis_id: int, db: Session = Depends(get_db)):
-    r = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+def get_analysis(
+    analysis_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    r = (
+        db.query(Analysis)
+        .filter(Analysis.id == analysis_id, Analysis.user_id == user.id)
+        .first()
+    )
     if not r:
-        return {"detail": "Not found"}
+        raise HTTPException(status_code=404, detail="Not found")
 
     return {
         "id": r.id,

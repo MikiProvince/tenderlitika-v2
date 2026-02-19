@@ -3,7 +3,10 @@
 import { AppShell } from "@/components/shell/AppShell";
 import { apiFetch } from "@/lib/api";
 import Link from "next/link";
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useState } from "react";
+
+import AnalysisShell from "@/components/analysis/AnalysisShell";
+import type { AnalysisViewModel, Finding, RiskLevel } from "@/components/analysis/types";
 
 type AnalysisDetail = {
   id: number;
@@ -12,121 +15,245 @@ type AnalysisDetail = {
   extracted_data: Record<string, any>;
   risk_score: number;
   risk_level: string;
-  risk_reasons: string[];
+  risk_reasons: any; // может быть json/string[]
   expected_roi_percent: number;
   rough_cash_gap: number | null;
   verdict: string;
   created_at: string;
 
-  // ✅ NEW
   input_cost_price: number | null;
   input_margin_percent: number | null;
   safe_cost_price: number | null;
 };
 
-function VerdictBadge({ verdict }: { verdict: string }) {
-  const v = verdict.toLowerCase();
-  const cls =
-    v.includes("не") ? "bg-red-50 border-red-200 text-red-700" :
-    v.includes("осторож") ? "bg-yellow-50 border-yellow-200 text-yellow-800" :
-    "bg-green-50 border-green-200 text-green-700";
+// ✅ теперь понимает русские уровни + подстраховывается risk_score
+function toRiskLevel(levelText: string, riskScore?: number): RiskLevel {
+  const v = (levelText || "").toLowerCase();
 
-  return <span className={`inline-flex rounded-full border px-3 py-1 text-xs ${cls}`}>{verdict}</span>;
+  // 1) score надежнее текста
+  if (typeof riskScore === "number") {
+    if (riskScore >= 10) return "critical";
+    if (riskScore >= 9) return "high";
+    if (riskScore >= 7) return "medium";
+    return "low";
+  }
+
+  // 2) EN
+  if (v.includes("critical")) return "critical";
+  if (v.includes("high")) return "high";
+  if (v.includes("medium")) return "medium";
+  if (v.includes("low")) return "low";
+
+  // 3) RU
+  if (v.includes("крит")) return "critical";
+  if (v.includes("высок")) return "high";
+  if (v.includes("средн")) return "medium";
+  if (v.includes("низк")) return "low";
+
+  return "low";
 }
 
-function fmtRub(x: number | null | undefined) {
-  if (x === null || x === undefined) return "—";
-  return `${Math.round(x).toLocaleString("ru-RU")} ₽`;
+function makeId(prefix: string, i: number) {
+  return `${prefix}-${i}-${Math.random().toString(16).slice(2)}`;
+}
+
+// Простая эвристика тяжести причины по тексту (быстро, но уже полезно)
+function severityFromReasonText(text: string): RiskLevel {
+  const t = (text || "").toLowerCase();
+
+  const highSignals = [
+    "нет аванс",
+    "аванса нет",
+    "оплата после полной поставки",
+    "после полной поставки",
+    "штраф",
+    "пеня",
+    "обеспечение контракта: 20",
+    "обеспечение контракта 20",
+    "обеспечение контракта: 30",
+    "обеспечение заявки",
+    "кассов",
+    "замороз",
+    "по заявкам",
+    "неопределенн",
+    "неопределённ",
+  ];
+
+  const mediumSignals = [
+    "обеспечение контракта",
+    "обеспечение заявки",
+    "гаранти",
+    "срок",
+    "растягив",
+    "партиями",
+    "поэтап",
+  ];
+
+  if (highSignals.some((s) => t.includes(s))) return "high";
+  if (mediumSignals.some((s) => t.includes(s))) return "medium";
+  return "low";
+}
+
+function mapAnalysisToVM(a: AnalysisDetail): AnalysisViewModel {
+  const extracted = a?.extracted_data ?? {};
+
+  const analysisSeverity = toRiskLevel(a?.risk_level, a?.risk_score);
+
+  // ✅ Danger phrases
+  const dangerRaw = extracted?.danger_phrases ?? extracted?.dangerPhrases ?? [];
+  const dangerPhrases: Finding[] = Array.isArray(dangerRaw)
+    ? dangerRaw.map((d: any, i: number) => {
+        const title =
+          typeof d === "string" ? d : d?.title || d?.phrase || "Опасная формулировка";
+
+        const sev =
+          typeof d === "object" && d?.severity
+            ? toRiskLevel(String(d.severity))
+            : "medium";
+
+        const quote =
+          typeof d === "object"
+            ? d?.quote ?? d?.matches?.[0]?.snippet
+            : undefined;
+
+        return {
+          id: makeId("d", i),
+          type: "DANGER_PHRASE",
+          severity: sev,
+          title,
+          impact: typeof d === "object" ? d?.hint || d?.impact : undefined,
+          recommendation: typeof d === "object" ? d?.recommendation : undefined,
+          evidence: quote ? { quote, page: d?.page, section: d?.section } : undefined,
+        };
+      })
+    : [];
+
+  // ✅ Primary risks (из risk_reasons)
+  const reasonsRaw = a?.risk_reasons ?? [];
+  const primaryRisks: Finding[] = Array.isArray(reasonsRaw)
+    ? reasonsRaw.slice(0, 6).map((r: any, i: number) => {
+        const title = typeof r === "string" ? r : r?.title || "Причина риска";
+        return {
+          id: makeId("r", i),
+          type: "PRIMARY_RISK",
+          // ✅ разные severity, а не LOW у всего
+          severity: severityFromReasonText(title),
+          title,
+          impact: typeof r === "object" ? r?.impact : undefined,
+          recommendation: typeof r === "object" ? r?.recommendation : undefined,
+        };
+      })
+    : [];
+
+  // ✅ Fix suggestions: если бэк не прислал — генерим из extracted_data
+  let fixSuggestions: string[] = [];
+  const backendFixes =
+    extracted?.fix_suggestions ?? extracted?.fixSuggestions ?? null;
+
+  if (Array.isArray(backendFixes) && backendFixes.length) {
+    fixSuggestions = backendFixes;
+  } else {
+    const fixes: string[] = [];
+
+    const advance = Number(extracted?.advance_percent ?? 0);
+    const payAfterFull = Boolean(extracted?.payment_after_full_delivery);
+    const contractSec = Number(extracted?.contract_security_percent ?? 0);
+    const bidSec = Number(extracted?.bid_security_percent ?? 0);
+    const deliveryByReq = Boolean(extracted?.delivery_by_customer_requests);
+
+    if (!advance || advance <= 0) {
+      fixes.push("Запросить аванс 20–30% или частичную предоплату по этапам/партиям.");
+    }
+    if (payAfterFull) {
+      fixes.push("Разбить оплату по этапам/партиям вместо оплаты после полной поставки.");
+    }
+    if (contractSec >= 20) {
+      fixes.push("Проверить возможность снизить обеспечение контракта до ≤10% или заменить формат (гарантия и т.п.).");
+    }
+    if (bidSec >= 5) {
+      fixes.push("Уточнить условия обеспечения заявки и заложить стоимость заморозки средств/гарантии в цену.");
+    }
+    if (deliveryByReq) {
+      fixes.push("Зафиксировать объём и график поставки: убрать неопределённость “по заявкам” или прописать лимиты/сроки.");
+    }
+
+    // Если совсем нет полей — покажем хотя бы 2 универсальных
+    if (!fixes.length) {
+      fixes.push("Проверить условия оплаты/сроков и оценить потребность в оборотных средствах до участия.");
+      fixes.push("Заложить риски штрафов/гарантий/сроков в цену или запросить разъяснения у заказчика.");
+    }
+
+    fixSuggestions = fixes;
+  }
+
+  return {
+    id: a.id,
+    createdAt: a.created_at,
+    verdict: a.verdict,
+    riskScore: a.risk_score,
+    riskLevel: analysisSeverity,
+
+    expectedRoiPercent: a.expected_roi_percent,
+    roughCashGap: a.rough_cash_gap,
+    safeCostPrice: a.safe_cost_price,
+    inputCostPrice: a.input_cost_price,
+    inputMarginPercent: a.input_margin_percent,
+
+    primaryRisks,
+    dangerPhrases,
+    fixSuggestions,
+
+    extractedData: extracted,
+    riskReasons: a.risk_reasons,
+
+    // можно потом с бэка, сейчас не трогаем
+    // confidence: 0.82,
+  };
 }
 
 export default function AnalysisDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+
   const [data, setData] = useState<AnalysisDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const { id } = use(params);
-
 
   useEffect(() => {
+    setLoading(true);
+    setError(null);
+
     apiFetch<AnalysisDetail>(`/analyses/${id}`)
       .then(setData)
       .catch((e) => setError(String(e?.message || e)))
       .finally(() => setLoading(false));
   }, [id]);
 
-  const danger = (data?.extracted_data as any)?.danger_phrases as
-    | Array<{
-        id: string;
-        severity: "high" | "medium" | "low";
-        title: string;
-        hint: string;
-        matches: Array<{ snippet: string; start: number; end: number }>;
-      }>
-    | undefined;
-
-  const priceIndicator = useMemo(() => {
-    if (!data) return null;
-
-    const cost = data.input_cost_price;
-    const safe = data.safe_cost_price;
-
-    if (typeof safe !== "number" || safe <= 0) {
-      return {
-        status: "unknown" as const,
-        badge: "⚪ Недостаточно данных",
-        text: "Не удалось посчитать безопасную себестоимость — в документе не найдена НМЦК или экстрактор не распознал сумму.",
-      };
-    }
-
-    if (typeof cost !== "number" || cost <= 0) {
-      return {
-        status: "unknown" as const,
-        badge: "⚪ Нет себестоимости",
-        text: "Для сравнения укажи себестоимость при анализе (она сохраняется в отчёт).",
-      };
-    }
-
-    const ratio = cost / safe;
-
-    if (ratio <= 0.95) {
-      return {
-        status: "safe" as const,
-        badge: "🟢 Цена ок",
-        text: "Себестоимость заметно ниже безопасной — по цене проходишь уверенно.",
-      };
-    }
-
-    if (ratio <= 1.05) {
-      return {
-        status: "border" as const,
-        badge: "🟡 На грани",
-        text: "Себестоимость близко к безопасной — ты на грани. Нужен запас/переговоры/оптимизация.",
-      };
-    }
-
-    return {
-      status: "danger" as const,
-      badge: "🔴 Опасно",
-      text: "Себестоимость выше безопасной — контракт финансово опасен при текущих условиях.",
-    };
-  }, [data]);
-  
+  const vm = data ? mapAnalysisToVM(data) : null;
 
   return (
     <AppShell>
       <div className="space-y-4">
+        {/* Шапка */}
         <div className="rounded-2xl border bg-white p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="text-xl font-semibold">Анализ #{id}</h1>
               <p className="mt-1 text-sm text-black/60">
-                Вердикт, метрики и причины риска.
+                Вердикт, риски, безопасная цена и доказательства.
               </p>
             </div>
+
             <div className="flex gap-2">
-              <Link href="/new" className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-black/90">
+              <Link
+                href="/new"
+                className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-black/90"
+              >
                 Новый анализ
               </Link>
-              <Link href="/history" className="rounded-xl border px-4 py-2 text-sm hover:bg-black/5">
+              <Link
+                href="/history"
+                className="rounded-xl border px-4 py-2 text-sm hover:bg-black/5"
+              >
                 История
               </Link>
             </div>
@@ -143,109 +270,10 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
           </div>
         )}
 
-        {data && (
-          <div className="space-y-4">
-            <div className="rounded-2xl border bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <VerdictBadge verdict={data.verdict} />
-                <div className="text-xs text-black/50">{new Date(data.created_at).toLocaleString()}</div>
-              </div>
-
-              <div className="mt-3 grid gap-3 md:grid-cols-4">
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">Risk Score</div>
-                  <div className="mt-1 text-lg font-semibold">{data.risk_score}</div>
-                  <div className="text-xs text-black/50">{data.risk_level}</div>
-                </div>
-
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">ROI</div>
-                  <div className="mt-1 text-lg font-semibold">{data.expected_roi_percent}%</div>
-                </div>
-
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">Кассовый разрыв</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {data.rough_cash_gap === null ? "—" : fmtRub(data.rough_cash_gap)}
-                  </div>
-                  <div className="text-xs text-black/50">оценка грубо</div>
-                </div>
-
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">Безопасная себестоимость</div>
-                  <div className="mt-1 text-lg font-semibold">{fmtRub(data.safe_cost_price)}</div>
-
-                  {priceIndicator && (
-                    <>
-                      <div className="mt-2 inline-flex items-center rounded-full border px-3 py-1 text-xs">
-                        {priceIndicator.badge}
-                      </div>
-                      <div className="mt-2 text-xs text-black/60">{priceIndicator.text}</div>
-                      <div className="mt-2 text-xs text-black/50">
-                        Твоя себестоимость: {fmtRub(data.input_cost_price)}
-                        {typeof data.input_margin_percent === "number" ? ` • маржа: ${data.input_margin_percent}%` : ""}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {danger?.length ? (
-                <div className="mt-4">
-                  <div className="text-sm font-medium">Опасные формулировки</div>
-
-                  <div className="mt-2 space-y-3">
-                    {danger.map((d, idx) => {
-                      const badge =
-                        d.severity === "high"
-                          ? "🔴 Высокий"
-                          : d.severity === "medium"
-                          ? "🟡 Средний"
-                          : "🟢 Низкий";
-
-                      return (
-                        <div key={idx} className="rounded-xl border p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold">{d.title}</div>
-                              <div className="mt-1 text-xs text-black/60">{d.hint}</div>
-                            </div>
-
-                            <span className="inline-flex rounded-full border px-3 py-1 text-xs text-black/70">
-                              {badge}
-                            </span>
-                          </div>
-
-                          {d.matches?.length ? (
-                            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-black/70">
-                              {d.matches.slice(0, 3).map((m, i) => (
-                                <li key={i}>{m.snippet}</li>
-                              ))}
-                            </ul>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="mt-4">
-                <div className="text-sm font-medium">Причины риска</div>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-black/70">
-                  {data.risk_reasons?.length
-                    ? data.risk_reasons.map((r, i) => <li key={i}>{r}</li>)
-                    : <li>Причины не указаны</li>}
-                </ul>
-              </div>
-            </div>
-
-            <details className="rounded-2xl border bg-white p-6 shadow-sm">
-              <summary className="cursor-pointer text-sm font-medium">Извлечённые данные (JSON)</summary>
-              <pre className="mt-3 overflow-auto rounded-xl bg-black/5 p-3 text-xs">
-                {JSON.stringify(data.extracted_data, null, 2)}
-              </pre>
-            </details>
+        {/* Новый UX */}
+        {vm && (
+          <div className="mx-auto max-w-6xl">
+            <AnalysisShell analysis={vm} />
           </div>
         )}
       </div>

@@ -22,9 +22,13 @@ function NavItem({ href, label }: { href: string; label: string }) {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  // ✅ На первом рендере всегда одинаково: mounted=false, hasKey=false
+  const [mounted, setMounted] = useState(false);
   const [hasKey, setHasKey] = useState(false);
 
+  // ✅ Только на клиенте после mount читаем localStorage через getApiKey()
   useEffect(() => {
+    setMounted(true);
     setHasKey(!!getApiKey());
   }, []);
 
@@ -43,8 +47,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
             <div className="rounded-full bg-black/5 px-3 py-1 text-xs">
               API Key:{" "}
-              <span className={hasKey ? "font-medium" : "text-black/50"}>
-                {hasKey ? "Set" : "Missing"}
+              <span className={mounted && hasKey ? "font-medium" : "text-black/50"}>
+                {mounted ? (hasKey ? "Set" : "Missing") : "—"}
               </span>
             </div>
 
