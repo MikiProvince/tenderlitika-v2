@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clearApiKey, getApiKey } from "@/lib/storage";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 function NavItem({ href, label }: { href: string; label: string }) {
   const pathname = usePathname();
@@ -22,11 +22,7 @@ function NavItem({ href, label }: { href: string; label: string }) {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const [hasKey, setHasKey] = useState(false);
-
-  useEffect(() => {
-    setHasKey(!!getApiKey());
-  }, []);
+  const [hasKey, setHasKey] = useState(() => !!getApiKey());
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">

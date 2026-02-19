@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from models.tender import TenderInput
-from models.report import AnalysisReport
 from core.extractor import extract_tender_data
 from core.risk_engine import calculate_risk
 from core.financial_model import calculate_financials, calculate_safe_cost_price
@@ -16,7 +15,6 @@ from services.current_user import get_current_user
 from services.limits import check_monthly_quota
 from db.models import User
 from fastapi.middleware.cors import CORSMiddleware
-import inspect
 
 app = FastAPI()
 
@@ -176,8 +174,19 @@ async def analyze_tender_pdf(
     }
 
 @app.get("/analyses")
-def list_analyses(db: Session = Depends(get_db), limit: int = 20):
-    rows = db.query(Analysis).order_by(Analysis.id.desc()).limit(limit).all()
+def list_analyses(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    limit: int = 20,
+):
+    safe_limit = max(1, min(limit, 100))
+    rows = (
+        db.query(Analysis)
+        .filter(Analysis.user_id == user.id)
+        .order_by(Analysis.id.desc())
+        .limit(safe_limit)
+        .all()
+    )
     return [
         {
             "id": r.id,
@@ -198,10 +207,18 @@ def list_analyses(db: Session = Depends(get_db), limit: int = 20):
 
 
 @app.get("/analyses/{analysis_id}")
-def get_analysis(analysis_id: int, db: Session = Depends(get_db)):
-    r = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+def get_analysis(
+    analysis_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    r = (
+        db.query(Analysis)
+        .filter(Analysis.id == analysis_id, Analysis.user_id == user.id)
+        .first()
+    )
     if not r:
-        return {"detail": "Not found"}
+        raise HTTPException(status_code=404, detail="Not found")
 
     return {
         "id": r.id,
