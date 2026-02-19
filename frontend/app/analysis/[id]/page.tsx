@@ -12,7 +12,7 @@ type AnalysisDetail = {
   id: number;
   source_type: "pdf" | "text";
   source_name: string | null;
-  extracted_data: Record<string, any>;
+  extracted_data: Record<string, unknown>;
   risk_score: number;
   risk_level: string;
   risk_reasons: any; // может быть json/string[]
@@ -224,7 +224,7 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
 
     apiFetch<AnalysisDetail>(`/analyses/${id}`)
       .then(setData)
-      .catch((e) => setError(String(e?.message || e)))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, [id]);
 

@@ -11,13 +11,8 @@ from services.pdf_text import extract_text_from_pdf_bytes
 from services.analysis_store import save_analysis
 from services.current_user import get_current_user
 from services.limits import check_monthly_quota
-from services.danger_phrases import find_danger_phrases  # ✅ правильный импорт
-
-from db.deps import get_db
-from db.models import Analysis, User
-
-from api.auth_routes import router as auth_router
-
+from db.models import User
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
