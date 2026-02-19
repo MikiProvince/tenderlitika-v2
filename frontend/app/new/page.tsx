@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 
 type AnalyzeResponse = {
   analysis_id: number;
-  extracted_data: Record<string, any>;
+  extracted_data: Record<string, unknown>;
   risk_score: number;
   risk_level: string;
   risk_reasons: string[];
@@ -78,8 +78,8 @@ export default function NewAnalysisPage() {
 
       setStep("Готово. Открываем отчёт…");
       router.push(`/analysis/${res.analysis_id}`);
-    } catch (e: any) {
-      const msg = String(e?.message || e);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
 
       // дружелюбные ошибки
       if (msg.includes("Missing X-API-Key") || msg.includes("Invalid API key") || msg.includes("401")) {
