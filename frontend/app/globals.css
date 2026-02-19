@@ -1,8 +1,18 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --font-geist-sans: "Segoe UI";
+  --font-geist-mono: "Consolas";
+  --background: #eef3f9;
+  --foreground: #10213a;
+  --surface: #ffffff;
+  --surface-muted: #f6f9fd;
+  --border: #d6e0ed;
+  --muted: #4c5b73;
+  --brand: #174a8b;
+  --brand-strong: #0d3160;
+  --success: #126443;
+  --danger: #a93a2a;
 }
 
 @theme inline {
@@ -12,15 +22,85 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scrollbar-gutter: stable;
 }
 
 body {
-  background: var(--background);
+  min-height: 100vh;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans, "Segoe UI"), sans-serif;
+  background:
+    radial-gradient(circle at 12% -10%, #d8e7ff 0%, transparent 34%),
+    radial-gradient(circle at 88% -15%, #e4f2ff 0%, transparent 36%),
+    linear-gradient(180deg, #f6f9fe 0%, var(--background) 40%, #edf2f8 100%);
+}
+
+a,
+button,
+input,
+textarea,
+select {
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand) 65%, white 35%);
+  outline-offset: 2px;
+}
+
+.surface-card {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgb(15 23 42 / 0.06);
+}
+
+.surface-muted {
+  border: 1px solid color-mix(in srgb, var(--border) 78%, white 22%);
+  border-radius: 0.875rem;
+  background: var(--surface-muted);
+}
+
+.btn-primary {
+  border-radius: 0.75rem;
+  background: var(--brand);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--brand-strong);
+}
+
+.btn-secondary {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: #fff;
+  color: var(--foreground);
+}
+
+.btn-secondary:hover {
+  background: color-mix(in srgb, var(--surface-muted) 88%, white 12%);
+}
+
+.status-chip {
+  border: 1px solid color-mix(in srgb, var(--border) 78%, white 22%);
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--surface-muted) 88%, white 12%);
+}
+
+@keyframes fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: fade-slide-up 280ms ease-out;
 }

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { AppShell } from "@/components/shell/AppShell";
 import AnalysisShell from "@/components/analysis/AnalysisShell";
@@ -272,28 +272,34 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
   return (
     <AppShell>
       <div className="space-y-4">
-        <div className="rounded-2xl border bg-white p-6 shadow-sm">
+        <section className="surface-card p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-xl font-semibold">Анализ #{id}</h1>
-              <p className="mt-1 text-sm text-black/60">Вердикт, риски, безопасная цена и доказательства.</p>
+              <h1 className="text-xl font-semibold tracking-tight">Анализ #{id}</h1>
+              <p className="mt-1 text-sm text-[var(--muted)]">Вердикт, риски, безопасная цена и доказательства по контракту.</p>
             </div>
 
             <div className="flex gap-2">
-              <Link href="/new" className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-black/90">
+              <Link href="/new" className="btn-primary px-4 py-2 text-sm font-medium">
                 Новый анализ
               </Link>
-              <Link href="/history" className="rounded-xl border px-4 py-2 text-sm hover:bg-black/5">
+              <Link href="/history" className="btn-secondary px-4 py-2 text-sm font-medium">
                 История
               </Link>
             </div>
           </div>
-        </div>
+        </section>
 
-        {loading && <div className="rounded-2xl border bg-white p-6 shadow-sm">Загружаем…</div>}
+        {loading && (
+          <section className="surface-card p-6">
+            <div className="text-sm text-[var(--muted)]">Загружаем данные анализа...</div>
+          </section>
+        )}
 
         {error && (
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">Ошибка: {error}</div>
+          <section className="surface-card border-red-200 bg-red-50 p-6 text-red-700">
+            Ошибка: {error}
+          </section>
         )}
 
         {vm && (
