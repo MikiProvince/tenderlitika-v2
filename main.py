@@ -48,7 +48,10 @@ def analyze_tender(
 ):
     check_monthly_quota(db, user)
 
-    extracted = extract_tender_data(data.text)
+    try:
+        extracted = extract_tender_data(data.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
 
     # ✅ danger phrases
     danger = find_danger_phrases(data.text)
@@ -104,8 +107,8 @@ def analyze_tender(
 @app.post("/analyze/pdf")
 async def analyze_tender_pdf(
     file: UploadFile = File(...),
-    cost_price: float = Form(...),
-    planned_margin_percent: float = Form(...),
+    cost_price: float = Form(..., gt=0),
+    planned_margin_percent: float = Form(..., ge=0, le=100),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):

@@ -1,36 +1,77 @@
-"use client";
+﻿"use client";
 
 import { AppShell } from "@/components/shell/AppShell";
+import AnalysisShell from "@/components/analysis/AnalysisShell";
+import type { AnalysisViewModel, Finding, RiskLevel } from "@/components/analysis/types";
 import { apiFetch } from "@/lib/api";
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
 
-import AnalysisShell from "@/components/analysis/AnalysisShell";
-import type { AnalysisViewModel, Finding, RiskLevel } from "@/components/analysis/types";
+type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
+type JsonObject = { [key: string]: JsonValue };
+
+type RiskReasonObject = {
+  title?: string;
+  impact?: string;
+  recommendation?: string;
+};
+
+type DangerPhraseObject = {
+  title?: string;
+  phrase?: string;
+  severity?: string;
+  quote?: string;
+  matches?: Array<{ snippet?: string }>;
+  hint?: string;
+  impact?: string;
+  recommendation?: string;
+  page?: number;
+  section?: string;
+};
 
 type AnalysisDetail = {
   id: number;
   source_type: "pdf" | "text";
   source_name: string | null;
-  extracted_data: Record<string, any>;
+  extracted_data: Record<string, unknown>;
   risk_score: number;
   risk_level: string;
-  risk_reasons: any; // может быть json/string[]
+  risk_reasons: unknown;
   expected_roi_percent: number;
   rough_cash_gap: number | null;
   verdict: string;
   created_at: string;
-
   input_cost_price: number | null;
   input_margin_percent: number | null;
   safe_cost_price: number | null;
 };
 
-// ✅ теперь понимает русские уровни + подстраховывается risk_score
+type RequestState = {
+  id: string;
+  data: AnalysisDetail | null;
+  error: string | null;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function asJsonObject(value: unknown): JsonObject {
+  return isRecord(value) ? (value as JsonObject) : {};
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
 function toRiskLevel(levelText: string, riskScore?: number): RiskLevel {
   const v = (levelText || "").toLowerCase();
 
-  // 1) score надежнее текста
   if (typeof riskScore === "number") {
     if (riskScore >= 10) return "critical";
     if (riskScore >= 9) return "high";
@@ -38,13 +79,11 @@ function toRiskLevel(levelText: string, riskScore?: number): RiskLevel {
     return "low";
   }
 
-  // 2) EN
   if (v.includes("critical")) return "critical";
   if (v.includes("high")) return "high";
   if (v.includes("medium")) return "medium";
   if (v.includes("low")) return "low";
 
-  // 3) RU
   if (v.includes("крит")) return "critical";
   if (v.includes("высок")) return "high";
   if (v.includes("средн")) return "medium";
@@ -53,13 +92,13 @@ function toRiskLevel(levelText: string, riskScore?: number): RiskLevel {
   return "low";
 }
 
-function makeId(prefix: string, i: number) {
-  return `${prefix}-${i}-${Math.random().toString(16).slice(2)}`;
+function makeId(prefix: string, i: number, title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  return `${prefix}-${i}-${slug || "item"}`;
 }
 
-// Простая эвристика тяжести причины по тексту (быстро, но уже полезно)
 function severityFromReasonText(text: string): RiskLevel {
-  const t = (text || "").toLowerCase();
+  const t = text.toLowerCase();
 
   const highSignals = [
     "нет аванс",
@@ -89,77 +128,71 @@ function severityFromReasonText(text: string): RiskLevel {
     "поэтап",
   ];
 
-  if (highSignals.some((s) => t.includes(s))) return "high";
-  if (mediumSignals.some((s) => t.includes(s))) return "medium";
+  if (highSignals.some((signal) => t.includes(signal))) return "high";
+  if (mediumSignals.some((signal) => t.includes(signal))) return "medium";
   return "low";
 }
 
 function mapAnalysisToVM(a: AnalysisDetail): AnalysisViewModel {
-  const extracted = a?.extracted_data ?? {};
+  const extracted = asJsonObject(a.extracted_data);
+  const analysisSeverity = toRiskLevel(a.risk_level, a.risk_score);
 
-  const analysisSeverity = toRiskLevel(a?.risk_level, a?.risk_score);
+  const dangerRaw = extracted["danger_phrases"] ?? extracted["dangerPhrases"];
+  const dangerItems = Array.isArray(dangerRaw) ? dangerRaw : [];
 
-  // ✅ Danger phrases
-  const dangerRaw = extracted?.danger_phrases ?? extracted?.dangerPhrases ?? [];
-  const dangerPhrases: Finding[] = Array.isArray(dangerRaw)
-    ? dangerRaw.map((d: any, i: number) => {
-        const title =
-          typeof d === "string" ? d : d?.title || d?.phrase || "Опасная формулировка";
+  const dangerPhrases: Finding[] = dangerItems.map((item, i) => {
+    const danger: DangerPhraseObject | null = isRecord(item) ? (item as DangerPhraseObject) : null;
+    const title = typeof item === "string" ? item : danger?.title || danger?.phrase || "Опасная формулировка";
+    const severity = danger?.severity ? toRiskLevel(String(danger.severity)) : "medium";
+    const firstMatch = Array.isArray(danger?.matches) ? danger?.matches[0] : undefined;
+    const quote = danger?.quote ?? firstMatch?.snippet;
 
-        const sev =
-          typeof d === "object" && d?.severity
-            ? toRiskLevel(String(d.severity))
-            : "medium";
+    return {
+      id: makeId("d", i, title),
+      type: "DANGER_PHRASE",
+      severity,
+      title,
+      impact: danger?.hint || danger?.impact,
+      recommendation: danger?.recommendation,
+      evidence: quote
+        ? {
+            quote,
+            page: typeof danger?.page === "number" ? danger.page : undefined,
+            section: typeof danger?.section === "string" ? danger.section : undefined,
+          }
+        : undefined,
+    };
+  });
 
-        const quote =
-          typeof d === "object"
-            ? d?.quote ?? d?.matches?.[0]?.snippet
-            : undefined;
+  const reasonsRaw = Array.isArray(a.risk_reasons) ? a.risk_reasons : [];
 
-        return {
-          id: makeId("d", i),
-          type: "DANGER_PHRASE",
-          severity: sev,
-          title,
-          impact: typeof d === "object" ? d?.hint || d?.impact : undefined,
-          recommendation: typeof d === "object" ? d?.recommendation : undefined,
-          evidence: quote ? { quote, page: d?.page, section: d?.section } : undefined,
-        };
-      })
-    : [];
+  const primaryRisks: Finding[] = reasonsRaw.slice(0, 6).map((item, i) => {
+    const reason: RiskReasonObject | null = isRecord(item) ? (item as RiskReasonObject) : null;
+    const title = typeof item === "string" ? item : reason?.title || "Причина риска";
 
-  // ✅ Primary risks (из risk_reasons)
-  const reasonsRaw = a?.risk_reasons ?? [];
-  const primaryRisks: Finding[] = Array.isArray(reasonsRaw)
-    ? reasonsRaw.slice(0, 6).map((r: any, i: number) => {
-        const title = typeof r === "string" ? r : r?.title || "Причина риска";
-        return {
-          id: makeId("r", i),
-          type: "PRIMARY_RISK",
-          // ✅ разные severity, а не LOW у всего
-          severity: severityFromReasonText(title),
-          title,
-          impact: typeof r === "object" ? r?.impact : undefined,
-          recommendation: typeof r === "object" ? r?.recommendation : undefined,
-        };
-      })
-    : [];
+    return {
+      id: makeId("r", i, title),
+      type: "PRIMARY_RISK",
+      severity: severityFromReasonText(title),
+      title,
+      impact: reason?.impact,
+      recommendation: reason?.recommendation,
+    };
+  });
 
-  // ✅ Fix suggestions: если бэк не прислал — генерим из extracted_data
   let fixSuggestions: string[] = [];
-  const backendFixes =
-    extracted?.fix_suggestions ?? extracted?.fixSuggestions ?? null;
+  const backendFixes = extracted["fix_suggestions"] ?? extracted["fixSuggestions"];
 
-  if (Array.isArray(backendFixes) && backendFixes.length) {
+  if (Array.isArray(backendFixes) && backendFixes.every((entry) => typeof entry === "string") && backendFixes.length) {
     fixSuggestions = backendFixes;
   } else {
     const fixes: string[] = [];
 
-    const advance = Number(extracted?.advance_percent ?? 0);
-    const payAfterFull = Boolean(extracted?.payment_after_full_delivery);
-    const contractSec = Number(extracted?.contract_security_percent ?? 0);
-    const bidSec = Number(extracted?.bid_security_percent ?? 0);
-    const deliveryByReq = Boolean(extracted?.delivery_by_customer_requests);
+    const advance = asNumber(extracted["advance_percent"]);
+    const payAfterFull = Boolean(extracted["payment_after_full_delivery"]);
+    const contractSec = asNumber(extracted["contract_security_percent"]);
+    const bidSec = asNumber(extracted["bid_security_percent"]);
+    const deliveryByReq = Boolean(extracted["delivery_by_customer_requests"]);
 
     if (!advance || advance <= 0) {
       fixes.push("Запросить аванс 20–30% или частичную предоплату по этапам/партиям.");
@@ -168,16 +201,15 @@ function mapAnalysisToVM(a: AnalysisDetail): AnalysisViewModel {
       fixes.push("Разбить оплату по этапам/партиям вместо оплаты после полной поставки.");
     }
     if (contractSec >= 20) {
-      fixes.push("Проверить возможность снизить обеспечение контракта до ≤10% или заменить формат (гарантия и т.п.).");
+      fixes.push("Проверить возможность снизить обеспечение контракта до <=10% или заменить формат (гарантия и т.п.).");
     }
     if (bidSec >= 5) {
       fixes.push("Уточнить условия обеспечения заявки и заложить стоимость заморозки средств/гарантии в цену.");
     }
     if (deliveryByReq) {
-      fixes.push("Зафиксировать объём и график поставки: убрать неопределённость “по заявкам” или прописать лимиты/сроки.");
+      fixes.push("Зафиксировать объём и график поставки: убрать неопределённость 'по заявкам' или прописать лимиты/сроки.");
     }
 
-    // Если совсем нет полей — покажем хотя бы 2 универсальных
     if (!fixes.length) {
       fixes.push("Проверить условия оплаты/сроков и оценить потребность в оборотных средствах до участия.");
       fixes.push("Заложить риски штрафов/гарантий/сроков в цену или запросить разъяснения у заказчика.");
@@ -192,85 +224,78 @@ function mapAnalysisToVM(a: AnalysisDetail): AnalysisViewModel {
     verdict: a.verdict,
     riskScore: a.risk_score,
     riskLevel: analysisSeverity,
-
     expectedRoiPercent: a.expected_roi_percent,
     roughCashGap: a.rough_cash_gap,
     safeCostPrice: a.safe_cost_price,
     inputCostPrice: a.input_cost_price,
     inputMarginPercent: a.input_margin_percent,
-
     primaryRisks,
     dangerPhrases,
     fixSuggestions,
-
     extractedData: extracted,
     riskReasons: a.risk_reasons,
-
-    // можно потом с бэка, сейчас не трогаем
-    // confidence: 0.82,
   };
 }
 
 export default function AnalysisDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
 
-  const [data, setData] = useState<AnalysisDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState<RequestState>({
+    id: "",
+    data: null,
+    error: null,
+  });
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
+    let cancelled = false;
 
     apiFetch<AnalysisDetail>(`/analyses/${id}`)
-      .then(setData)
-      .catch((e) => setError(String(e?.message || e)))
-      .finally(() => setLoading(false));
+      .then((nextData) => {
+        if (cancelled) return;
+        setState({ id, data: nextData, error: null });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setState({ id, data: null, error: String(e instanceof Error ? e.message : e) });
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
+  const loading = state.id !== id;
+  const error = loading ? null : state.error;
+  const data = loading ? null : state.data;
   const vm = data ? mapAnalysisToVM(data) : null;
 
   return (
     <AppShell>
       <div className="space-y-4">
-        {/* Шапка */}
         <div className="rounded-2xl border bg-white p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="text-xl font-semibold">Анализ #{id}</h1>
-              <p className="mt-1 text-sm text-black/60">
-                Вердикт, риски, безопасная цена и доказательства.
-              </p>
+              <p className="mt-1 text-sm text-black/60">Вердикт, риски, безопасная цена и доказательства.</p>
             </div>
 
             <div className="flex gap-2">
-              <Link
-                href="/new"
-                className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-black/90"
-              >
+              <Link href="/new" className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-black/90">
                 Новый анализ
               </Link>
-              <Link
-                href="/history"
-                className="rounded-xl border px-4 py-2 text-sm hover:bg-black/5"
-              >
+              <Link href="/history" className="rounded-xl border px-4 py-2 text-sm hover:bg-black/5">
                 История
               </Link>
             </div>
           </div>
         </div>
 
-        {loading && (
-          <div className="rounded-2xl border bg-white p-6 shadow-sm">Загружаем…</div>
-        )}
+        {loading && <div className="rounded-2xl border bg-white p-6 shadow-sm">Загружаем…</div>}
 
         {error && (
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">
-            Ошибка: {error}
-          </div>
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">Ошибка: {error}</div>
         )}
 
-        {/* Новый UX */}
         {vm && (
           <div className="mx-auto max-w-6xl">
             <AnalysisShell analysis={vm} />

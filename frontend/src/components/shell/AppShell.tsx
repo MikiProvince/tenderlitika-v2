@@ -1,9 +1,9 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { clearApiKey, getApiKey } from "@/lib/storage";
-import { useEffect, useState } from "react";
+import { clearApiKey, getApiKey, subscribeToApiKey } from "@/lib/storage";
+import { useSyncExternalStore } from "react";
 
 function NavItem({ href, label }: { href: string; label: string }) {
   const pathname = usePathname();
@@ -22,15 +22,7 @@ function NavItem({ href, label }: { href: string; label: string }) {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  // ✅ На первом рендере всегда одинаково: mounted=false, hasKey=false
-  const [mounted, setMounted] = useState(false);
-  const [hasKey, setHasKey] = useState(false);
-
-  // ✅ Только на клиенте после mount читаем localStorage через getApiKey()
-  useEffect(() => {
-    setMounted(true);
-    setHasKey(!!getApiKey());
-  }, []);
+  const hasKey = useSyncExternalStore(subscribeToApiKey, () => !!getApiKey(), () => false);
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900">
@@ -46,17 +38,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
 
             <div className="rounded-full bg-black/5 px-3 py-1 text-xs">
-              API Key:{" "}
-              <span className={mounted && hasKey ? "font-medium" : "text-black/50"}>
-                {mounted ? (hasKey ? "Set" : "Missing") : "—"}
-              </span>
+              API Key: <span className={hasKey ? "font-medium" : "text-black/50"}>{hasKey ? "Set" : "Missing"}</span>
             </div>
 
             <button
               className="rounded-full border px-3 py-1 text-xs hover:bg-black/5"
               onClick={() => {
                 clearApiKey();
-                setHasKey(false);
                 window.location.href = "/login";
               }}
               title="Очистить API ключ и выйти"
@@ -70,9 +58,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <main className="mx-auto grid max-w-6xl grid-cols-12 gap-4 px-4 py-6">
         <aside className="col-span-12 md:col-span-3">
           <div className="rounded-2xl border bg-white p-3 shadow-sm">
-            <div className="mb-2 px-2 text-xs font-medium text-black/50">
-              Навигация
-            </div>
+            <div className="mb-2 px-2 text-xs font-medium text-black/50">Навигация</div>
             <nav className="space-y-1">
               <NavItem href="/dashboard" label="Dashboard" />
               <NavItem href="/new" label="Новый анализ" />
