@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from db.deps import get_db
@@ -10,19 +11,31 @@ from services.current_user import get_current_user
 
 router = APIRouter()
 
+
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=512)
+
+
+class CreateApiKeyRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=512)
+    name: str = Field(default="default", min_length=1, max_length=120)
+
+
 @router.post("/signup")
-def signup(email: str, password: str, db: Session = Depends(get_db)):
-    email = email.strip().lower()
+def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    password = payload.password
     
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="Invalid email")
-    
-    # bcrypt limit: 72 bytes
-    if len(password.encode("utf-8")) > 72:
+
+    if len(password.encode("utf-8")) > 512:
         raise HTTPException(
             status_code=400,
-            detail="Password too long (max 72 bytes for bcrypt). Use a shorter password."
-    )
+            detail="Password too long (max 512 bytes). Use a shorter password.",
+        )
 
     exists = db.query(User).filter(User.email == email).first()
     if exists:
@@ -38,19 +51,20 @@ def signup(email: str, password: str, db: Session = Depends(get_db)):
 
 @router.post("/api-keys")
 def create_api_key(
-    name: str = "default",
-    email: str | None = None,
-    password: str | None = None,
+    payload: CreateApiKeyRequest,
     db: Session = Depends(get_db),
 ):
     """
     MVP-вариант: создаём ключ по email+password (без полноценной сессии/токенов).
     Позже заменим на normal auth (JWT/сессии).
     """
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="email and password required")
+    email = payload.email.strip().lower()
+    password = payload.password
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Key name cannot be empty")
 
-    user = db.query(User).filter(User.email == email.strip().lower(), User.is_active == True).first()
+    user = db.query(User).filter(User.email == email, User.is_active == True).first()
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 

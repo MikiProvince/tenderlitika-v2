@@ -1,9 +1,33 @@
-"use client";
+﻿"use client";
 
 import { AppShell } from "@/components/shell/AppShell";
+import AnalysisShell from "@/components/analysis/AnalysisShell";
+import type { AnalysisViewModel, Finding, RiskLevel } from "@/components/analysis/types";
 import { apiFetch } from "@/lib/api";
 import Link from "next/link";
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useState } from "react";
+
+type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
+type JsonObject = { [key: string]: JsonValue };
+
+type RiskReasonObject = {
+  title?: string;
+  impact?: string;
+  recommendation?: string;
+};
+
+type DangerPhraseObject = {
+  title?: string;
+  phrase?: string;
+  severity?: string;
+  quote?: string;
+  matches?: Array<{ snippet?: string }>;
+  hint?: string;
+  impact?: string;
+  recommendation?: string;
+  page?: number;
+  section?: string;
+};
 
 type AnalysisDetail = {
   id: number;
@@ -12,104 +36,238 @@ type AnalysisDetail = {
   extracted_data: Record<string, unknown>;
   risk_score: number;
   risk_level: string;
-  risk_reasons: string[];
+  risk_reasons: unknown;
   expected_roi_percent: number;
   rough_cash_gap: number | null;
   verdict: string;
   created_at: string;
-
-  // ✅ NEW
   input_cost_price: number | null;
   input_margin_percent: number | null;
   safe_cost_price: number | null;
 };
 
-function VerdictBadge({ verdict }: { verdict: string }) {
-  const v = verdict.toLowerCase();
-  const cls =
-    v.includes("не") ? "bg-red-50 border-red-200 text-red-700" :
-    v.includes("осторож") ? "bg-yellow-50 border-yellow-200 text-yellow-800" :
-    "bg-green-50 border-green-200 text-green-700";
+type RequestState = {
+  id: string;
+  data: AnalysisDetail | null;
+  error: string | null;
+};
 
-  return <span className={`inline-flex rounded-full border px-3 py-1 text-xs ${cls}`}>{verdict}</span>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function fmtRub(x: number | null | undefined) {
-  if (x === null || x === undefined) return "—";
-  return `${Math.round(x).toLocaleString("ru-RU")} ₽`;
+function asJsonObject(value: unknown): JsonObject {
+  return isRecord(value) ? (value as JsonObject) : {};
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function toRiskLevel(levelText: string, riskScore?: number): RiskLevel {
+  const v = (levelText || "").toLowerCase();
+
+  if (typeof riskScore === "number") {
+    if (riskScore >= 10) return "critical";
+    if (riskScore >= 9) return "high";
+    if (riskScore >= 7) return "medium";
+    return "low";
+  }
+
+  if (v.includes("critical")) return "critical";
+  if (v.includes("high")) return "high";
+  if (v.includes("medium")) return "medium";
+  if (v.includes("low")) return "low";
+
+  if (v.includes("крит")) return "critical";
+  if (v.includes("высок")) return "high";
+  if (v.includes("средн")) return "medium";
+  if (v.includes("низк")) return "low";
+
+  return "low";
+}
+
+function makeId(prefix: string, i: number, title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "-").replace(/^-+|-+$/g, "");
+  return `${prefix}-${i}-${slug || "item"}`;
+}
+
+function severityFromReasonText(text: string): RiskLevel {
+  const t = text.toLowerCase();
+
+  const highSignals = [
+    "нет аванс",
+    "аванса нет",
+    "оплата после полной поставки",
+    "после полной поставки",
+    "штраф",
+    "пеня",
+    "обеспечение контракта: 20",
+    "обеспечение контракта 20",
+    "обеспечение контракта: 30",
+    "обеспечение заявки",
+    "кассов",
+    "замороз",
+    "по заявкам",
+    "неопределенн",
+    "неопределённ",
+  ];
+
+  const mediumSignals = [
+    "обеспечение контракта",
+    "обеспечение заявки",
+    "гаранти",
+    "срок",
+    "растягив",
+    "партиями",
+    "поэтап",
+  ];
+
+  if (highSignals.some((signal) => t.includes(signal))) return "high";
+  if (mediumSignals.some((signal) => t.includes(signal))) return "medium";
+  return "low";
+}
+
+function mapAnalysisToVM(a: AnalysisDetail): AnalysisViewModel {
+  const extracted = asJsonObject(a.extracted_data);
+  const analysisSeverity = toRiskLevel(a.risk_level, a.risk_score);
+
+  const dangerRaw = extracted["danger_phrases"] ?? extracted["dangerPhrases"];
+  const dangerItems = Array.isArray(dangerRaw) ? dangerRaw : [];
+
+  const dangerPhrases: Finding[] = dangerItems.map((item, i) => {
+    const danger: DangerPhraseObject | null = isRecord(item) ? (item as DangerPhraseObject) : null;
+    const title = typeof item === "string" ? item : danger?.title || danger?.phrase || "Опасная формулировка";
+    const severity = danger?.severity ? toRiskLevel(String(danger.severity)) : "medium";
+    const firstMatch = Array.isArray(danger?.matches) ? danger?.matches[0] : undefined;
+    const quote = danger?.quote ?? firstMatch?.snippet;
+
+    return {
+      id: makeId("d", i, title),
+      type: "DANGER_PHRASE",
+      severity,
+      title,
+      impact: danger?.hint || danger?.impact,
+      recommendation: danger?.recommendation,
+      evidence: quote
+        ? {
+            quote,
+            page: typeof danger?.page === "number" ? danger.page : undefined,
+            section: typeof danger?.section === "string" ? danger.section : undefined,
+          }
+        : undefined,
+    };
+  });
+
+  const reasonsRaw = Array.isArray(a.risk_reasons) ? a.risk_reasons : [];
+
+  const primaryRisks: Finding[] = reasonsRaw.slice(0, 6).map((item, i) => {
+    const reason: RiskReasonObject | null = isRecord(item) ? (item as RiskReasonObject) : null;
+    const title = typeof item === "string" ? item : reason?.title || "Причина риска";
+
+    return {
+      id: makeId("r", i, title),
+      type: "PRIMARY_RISK",
+      severity: severityFromReasonText(title),
+      title,
+      impact: reason?.impact,
+      recommendation: reason?.recommendation,
+    };
+  });
+
+  let fixSuggestions: string[] = [];
+  const backendFixes = extracted["fix_suggestions"] ?? extracted["fixSuggestions"];
+
+  if (Array.isArray(backendFixes) && backendFixes.every((entry) => typeof entry === "string") && backendFixes.length) {
+    fixSuggestions = backendFixes;
+  } else {
+    const fixes: string[] = [];
+
+    const advance = asNumber(extracted["advance_percent"]);
+    const payAfterFull = Boolean(extracted["payment_after_full_delivery"]);
+    const contractSec = asNumber(extracted["contract_security_percent"]);
+    const bidSec = asNumber(extracted["bid_security_percent"]);
+    const deliveryByReq = Boolean(extracted["delivery_by_customer_requests"]);
+
+    if (!advance || advance <= 0) {
+      fixes.push("Запросить аванс 20–30% или частичную предоплату по этапам/партиям.");
+    }
+    if (payAfterFull) {
+      fixes.push("Разбить оплату по этапам/партиям вместо оплаты после полной поставки.");
+    }
+    if (contractSec >= 20) {
+      fixes.push("Проверить возможность снизить обеспечение контракта до <=10% или заменить формат (гарантия и т.п.).");
+    }
+    if (bidSec >= 5) {
+      fixes.push("Уточнить условия обеспечения заявки и заложить стоимость заморозки средств/гарантии в цену.");
+    }
+    if (deliveryByReq) {
+      fixes.push("Зафиксировать объём и график поставки: убрать неопределённость 'по заявкам' или прописать лимиты/сроки.");
+    }
+
+    if (!fixes.length) {
+      fixes.push("Проверить условия оплаты/сроков и оценить потребность в оборотных средствах до участия.");
+      fixes.push("Заложить риски штрафов/гарантий/сроков в цену или запросить разъяснения у заказчика.");
+    }
+
+    fixSuggestions = fixes;
+  }
+
+  return {
+    id: a.id,
+    createdAt: a.created_at,
+    verdict: a.verdict,
+    riskScore: a.risk_score,
+    riskLevel: analysisSeverity,
+    expectedRoiPercent: a.expected_roi_percent,
+    roughCashGap: a.rough_cash_gap,
+    safeCostPrice: a.safe_cost_price,
+    inputCostPrice: a.input_cost_price,
+    inputMarginPercent: a.input_margin_percent,
+    primaryRisks,
+    dangerPhrases,
+    fixSuggestions,
+    extractedData: extracted,
+    riskReasons: a.risk_reasons,
+  };
 }
 
 export default function AnalysisDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const [data, setData] = useState<AnalysisDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const { id } = use(params);
 
+  const [state, setState] = useState<RequestState>({
+    id: "",
+    data: null,
+    error: null,
+  });
 
   useEffect(() => {
+    let cancelled = false;
+
     apiFetch<AnalysisDetail>(`/analyses/${id}`)
-      .then(setData)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
+      .then((nextData) => {
+        if (cancelled) return;
+        setState({ id, data: nextData, error: null });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setState({ id, data: null, error: String(e instanceof Error ? e.message : e) });
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
-  const danger = (data?.extracted_data as any)?.danger_phrases as
-    | Array<{
-        id: string;
-        severity: "high" | "medium" | "low";
-        title: string;
-        hint: string;
-        matches: Array<{ snippet: string; start: number; end: number }>;
-      }>
-    | undefined;
-
-  const priceIndicator = useMemo(() => {
-    if (!data) return null;
-
-    const cost = data.input_cost_price;
-    const safe = data.safe_cost_price;
-
-    if (typeof safe !== "number" || safe <= 0) {
-      return {
-        status: "unknown" as const,
-        badge: "⚪ Недостаточно данных",
-        text: "Не удалось посчитать безопасную себестоимость — в документе не найдена НМЦК или экстрактор не распознал сумму.",
-      };
-    }
-
-    if (typeof cost !== "number" || cost <= 0) {
-      return {
-        status: "unknown" as const,
-        badge: "⚪ Нет себестоимости",
-        text: "Для сравнения укажи себестоимость при анализе (она сохраняется в отчёт).",
-      };
-    }
-
-    const ratio = cost / safe;
-
-    if (ratio <= 0.95) {
-      return {
-        status: "safe" as const,
-        badge: "🟢 Цена ок",
-        text: "Себестоимость заметно ниже безопасной — по цене проходишь уверенно.",
-      };
-    }
-
-    if (ratio <= 1.05) {
-      return {
-        status: "border" as const,
-        badge: "🟡 На грани",
-        text: "Себестоимость близко к безопасной — ты на грани. Нужен запас/переговоры/оптимизация.",
-      };
-    }
-
-    return {
-      status: "danger" as const,
-      badge: "🔴 Опасно",
-      text: "Себестоимость выше безопасной — контракт финансово опасен при текущих условиях.",
-    };
-  }, [data]);
-  
+  const loading = state.id !== id;
+  const error = loading ? null : state.error;
+  const data = loading ? null : state.data;
+  const vm = data ? mapAnalysisToVM(data) : null;
 
   return (
     <AppShell>
@@ -118,10 +276,9 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
           <div className="flex items-start justify-between gap-4">
             <div>
               <h1 className="text-xl font-semibold">Анализ #{id}</h1>
-              <p className="mt-1 text-sm text-black/60">
-                Вердикт, метрики и причины риска.
-              </p>
+              <p className="mt-1 text-sm text-black/60">Вердикт, риски, безопасная цена и доказательства.</p>
             </div>
+
             <div className="flex gap-2">
               <Link href="/new" className="rounded-xl bg-black px-4 py-2 text-sm text-white hover:bg-black/90">
                 Новый анализ
@@ -133,119 +290,15 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
           </div>
         </div>
 
-        {loading && (
-          <div className="rounded-2xl border bg-white p-6 shadow-sm">Загружаем…</div>
-        )}
+        {loading && <div className="rounded-2xl border bg-white p-6 shadow-sm">Загружаем…</div>}
 
         {error && (
-          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">
-            Ошибка: {error}
-          </div>
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700 shadow-sm">Ошибка: {error}</div>
         )}
 
-        {data && (
-          <div className="space-y-4">
-            <div className="rounded-2xl border bg-white p-6 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <VerdictBadge verdict={data.verdict} />
-                <div className="text-xs text-black/50">{new Date(data.created_at).toLocaleString()}</div>
-              </div>
-
-              <div className="mt-3 grid gap-3 md:grid-cols-4">
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">Risk Score</div>
-                  <div className="mt-1 text-lg font-semibold">{data.risk_score}</div>
-                  <div className="text-xs text-black/50">{data.risk_level}</div>
-                </div>
-
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">ROI</div>
-                  <div className="mt-1 text-lg font-semibold">{data.expected_roi_percent}%</div>
-                </div>
-
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">Кассовый разрыв</div>
-                  <div className="mt-1 text-lg font-semibold">
-                    {data.rough_cash_gap === null ? "—" : fmtRub(data.rough_cash_gap)}
-                  </div>
-                  <div className="text-xs text-black/50">оценка грубо</div>
-                </div>
-
-                <div className="rounded-xl border p-4">
-                  <div className="text-xs text-black/50">Безопасная себестоимость</div>
-                  <div className="mt-1 text-lg font-semibold">{fmtRub(data.safe_cost_price)}</div>
-
-                  {priceIndicator && (
-                    <>
-                      <div className="mt-2 inline-flex items-center rounded-full border px-3 py-1 text-xs">
-                        {priceIndicator.badge}
-                      </div>
-                      <div className="mt-2 text-xs text-black/60">{priceIndicator.text}</div>
-                      <div className="mt-2 text-xs text-black/50">
-                        Твоя себестоимость: {fmtRub(data.input_cost_price)}
-                        {typeof data.input_margin_percent === "number" ? ` • маржа: ${data.input_margin_percent}%` : ""}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {danger?.length ? (
-                <div className="mt-4">
-                  <div className="text-sm font-medium">Опасные формулировки</div>
-
-                  <div className="mt-2 space-y-3">
-                    {danger.map((d, idx) => {
-                      const badge =
-                        d.severity === "high"
-                          ? "🔴 Высокий"
-                          : d.severity === "medium"
-                          ? "🟡 Средний"
-                          : "🟢 Низкий";
-
-                      return (
-                        <div key={idx} className="rounded-xl border p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold">{d.title}</div>
-                              <div className="mt-1 text-xs text-black/60">{d.hint}</div>
-                            </div>
-
-                            <span className="inline-flex rounded-full border px-3 py-1 text-xs text-black/70">
-                              {badge}
-                            </span>
-                          </div>
-
-                          {d.matches?.length ? (
-                            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-black/70">
-                              {d.matches.slice(0, 3).map((m, i) => (
-                                <li key={i}>{m.snippet}</li>
-                              ))}
-                            </ul>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="mt-4">
-                <div className="text-sm font-medium">Причины риска</div>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-black/70">
-                  {data.risk_reasons?.length
-                    ? data.risk_reasons.map((r, i) => <li key={i}>{r}</li>)
-                    : <li>Причины не указаны</li>}
-                </ul>
-              </div>
-            </div>
-
-            <details className="rounded-2xl border bg-white p-6 shadow-sm">
-              <summary className="cursor-pointer text-sm font-medium">Извлечённые данные (JSON)</summary>
-              <pre className="mt-3 overflow-auto rounded-xl bg-black/5 p-3 text-xs">
-                {JSON.stringify(data.extracted_data, null, 2)}
-              </pre>
-            </details>
+        {vm && (
+          <div className="mx-auto max-w-6xl">
+            <AnalysisShell analysis={vm} />
           </div>
         )}
       </div>

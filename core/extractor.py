@@ -1,11 +1,13 @@
 import re
 import json
 import os
+import logging
 import google.generativeai as genai
 from dotenv import load_dotenv
 from typing import Any, Optional
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # ---------- helpers ----------
 
@@ -70,9 +72,34 @@ def _extract_json_from_text(s: str) -> dict:
 
 # ---------- Gemini setup ----------
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_NAME = os.getenv("GEMINI_MODEL", "models/gemini-flash-latest")
-model = genai.GenerativeModel(MODEL_NAME)
+_MODEL: genai.GenerativeModel | None = None
+_MODEL_INIT_FAILED = False
+
+
+def _get_model() -> genai.GenerativeModel | None:
+    global _MODEL
+    global _MODEL_INIT_FAILED
+
+    if _MODEL is not None:
+        return _MODEL
+    if _MODEL_INIT_FAILED:
+        return None
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        _MODEL_INIT_FAILED = True
+        logger.warning("GEMINI_API_KEY is missing. Using regex-only extraction fallback.")
+        return None
+
+    try:
+        genai.configure(api_key=api_key)
+        _MODEL = genai.GenerativeModel(MODEL_NAME)
+        return _MODEL
+    except Exception:
+        _MODEL_INIT_FAILED = True
+        logger.exception("Failed to initialize Gemini model. Using regex-only extraction fallback.")
+        return None
 
 EXTRACTION_PROMPT = """
 Извлеки данные из текста тендера. Верни строго JSON и только JSON:
@@ -120,17 +147,30 @@ BASE_SCHEMA = {
 }
 
 def extract_with_llm(text: str) -> dict:
-    response = model.generate_content(
-        EXTRACTION_PROMPT + "\n\n" + (text or "")[:15000],
-        generation_config={
-            "temperature": 0,
-            "response_mime_type": "application/json",
-        },
-    )
-    parsed = _extract_json_from_text(getattr(response, "text", "") or "")
-    if not isinstance(parsed, dict):
+    model = _get_model()
+    if model is None:
         return {}
-    return parsed
+
+    prompt_text = (text or "")[:15000]
+    if not prompt_text.strip():
+        return {}
+
+    for _ in range(2):
+        try:
+            response = model.generate_content(
+                EXTRACTION_PROMPT + "\n\n" + prompt_text,
+                generation_config={
+                    "temperature": 0,
+                    "response_mime_type": "application/json",
+                },
+            )
+            parsed = _extract_json_from_text(getattr(response, "text", "") or "")
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            logger.exception("Gemini extraction failed. Retrying with fallback logic.")
+
+    return {}
 
 # ---------- Regex fallbacks ----------
 
