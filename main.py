@@ -42,6 +42,9 @@ def analyze_tender(data: TenderInput, db: Session = Depends(get_db), user: User 
 
     extracted = extract_tender_data(data.text)
 
+    danger = find_danger_phrases(data.text)
+    extracted["danger_phrases"] = danger
+
     risk_score, risk_level, reasons = calculate_risk(extracted)
     roi, cash_gap = calculate_financials(
         extracted, 
@@ -123,6 +126,9 @@ async def analyze_tender_pdf(
         extracted = extract_tender_data(text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
+    
+    danger = find_danger_phrases(text)
+    extracted["danger_phrases"] = danger
 
     risk_score, risk_level, reasons = calculate_risk(extracted)
     roi, cash_gap = calculate_financials(extracted, cost_price, planned_margin_percent)

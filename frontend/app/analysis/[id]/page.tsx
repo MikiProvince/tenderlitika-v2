@@ -45,12 +45,23 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
   const [loading, setLoading] = useState(true);
   const { id } = use(params);
 
+
   useEffect(() => {
     apiFetch<AnalysisDetail>(`/analyses/${id}`)
       .then(setData)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, [id]);
+
+  const danger = (data?.extracted_data as any)?.danger_phrases as
+    | Array<{
+        id: string;
+        severity: "high" | "medium" | "low";
+        title: string;
+        hint: string;
+        matches: Array<{ snippet: string; start: number; end: number }>;
+      }>
+    | undefined;
 
   const priceIndicator = useMemo(() => {
     if (!data) return null;
@@ -98,6 +109,7 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
       text: "Себестоимость выше безопасной — контракт финансово опасен при текущих условиях.",
     };
   }, [data]);
+  
 
   return (
     <AppShell>
@@ -177,6 +189,46 @@ export default function AnalysisDetailPage({ params }: { params: Promise<{ id: s
                   )}
                 </div>
               </div>
+
+              {danger?.length ? (
+                <div className="mt-4">
+                  <div className="text-sm font-medium">Опасные формулировки</div>
+
+                  <div className="mt-2 space-y-3">
+                    {danger.map((d, idx) => {
+                      const badge =
+                        d.severity === "high"
+                          ? "🔴 Высокий"
+                          : d.severity === "medium"
+                          ? "🟡 Средний"
+                          : "🟢 Низкий";
+
+                      return (
+                        <div key={idx} className="rounded-xl border p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold">{d.title}</div>
+                              <div className="mt-1 text-xs text-black/60">{d.hint}</div>
+                            </div>
+
+                            <span className="inline-flex rounded-full border px-3 py-1 text-xs text-black/70">
+                              {badge}
+                            </span>
+                          </div>
+
+                          {d.matches?.length ? (
+                            <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-black/70">
+                              {d.matches.slice(0, 3).map((m, i) => (
+                                <li key={i}>{m.snippet}</li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="mt-4">
                 <div className="text-sm font-medium">Причины риска</div>
