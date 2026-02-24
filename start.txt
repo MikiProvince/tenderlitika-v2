@@ -1,0 +1,7 @@
+backend:
+cd D:\DEV\tenderlitika_v2
+.\venv\Scripts\Activate.ps1
+uvicorn main:app --reload  
+frontend:
+cd D:\DEV\tenderlitika_v2\frontend
+npm run dev

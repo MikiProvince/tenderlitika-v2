@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { AppShell } from "@/components/shell/AppShell";
 import { apiFetch } from "@/lib/api";
@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Analysis = {
   id: number;
-  source_type: "pdf" | "text";
+  source_type: "pdf" | "text" | "doc" | "docx" | "batch";
   source_name: string | null;
   risk_score: number;
   risk_level: string;
@@ -22,6 +22,14 @@ const MONTH_LIMIT = 30;
 function isHighRisk(item: Analysis): boolean {
   const lvl = item.risk_level.toLowerCase();
   return item.risk_score >= 8 || lvl.includes("high") || lvl.includes("critical") || lvl.includes("высок") || lvl.includes("крит");
+}
+
+function sourceLabel(item: Analysis): string {
+  if (item.source_name) return item.source_name;
+  if (item.source_type === "batch") return "Пакет документов";
+  if (item.source_type === "doc" || item.source_type === "docx") return "Документ";
+  if (item.source_type === "pdf") return "PDF-документ";
+  return "Текстовый анализ";
 }
 
 export default function DashboardPage() {
@@ -91,7 +99,7 @@ export default function DashboardPage() {
           <div className="surface-card p-5">
             <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Средний риск</div>
             <div className="mt-2 text-2xl font-semibold tracking-tight">{loading ? "—" : avgRisk ?? "—"}</div>
-            <div className="mt-2 text-xs text-[var(--muted)]">По всем завершённым анализам</div>
+            <div className="mt-2 text-xs text-[var(--muted)]">По всем завершенным анализам</div>
           </div>
 
           <div className="surface-card p-5">
@@ -124,13 +132,13 @@ export default function DashboardPage() {
                 <div className="rounded-full bg-white px-2.5 py-1 text-xs text-slate-600">{new Date(latest.created_at).toLocaleString("ru-RU")}</div>
               </div>
               <div className="mt-3 text-sm font-semibold text-slate-900">{latest.verdict}</div>
-              <div className="mt-1 text-sm text-[var(--muted)]">Источник: {latest.source_name ?? "Текстовый анализ"}</div>
+              <div className="mt-1 text-sm text-[var(--muted)]">Источник: {sourceLabel(latest)}</div>
             </div>
           )}
 
           {!loading && !latest && !error && (
             <div className="mt-4 surface-muted p-4 text-sm text-[var(--muted)]">
-              Пока нет сохранённых анализов. Запустите первый разбор, чтобы увидеть показатели и динамику рисков.
+              Пока нет сохраненных анализов. Запустите первый разбор, чтобы увидеть показатели и динамику рисков.
             </div>
           )}
         </section>

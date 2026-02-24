@@ -31,7 +31,7 @@ type DangerPhraseObject = {
 
 type AnalysisDetail = {
   id: number;
-  source_type: "pdf" | "text";
+  source_type: "pdf" | "text" | "doc" | "docx" | "batch";
   source_name: string | null;
   extracted_data: Record<string, unknown>;
   risk_score: number;

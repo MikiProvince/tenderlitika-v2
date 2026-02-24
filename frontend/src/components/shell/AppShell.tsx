@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { clearApiKey, getApiKey, subscribeToApiKey } from "@/lib/storage";
+import { clearApiKey, getApiKey, getLlmProvider, setLlmProvider, subscribeToApiKey, subscribeToLlmProvider } from "@/lib/storage";
 import { useSyncExternalStore } from "react";
 
 function NavItem({ href, label }: { href: string; label: string }) {
@@ -26,6 +26,7 @@ function NavItem({ href, label }: { href: string; label: string }) {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const hasKey = useSyncExternalStore(subscribeToApiKey, () => !!getApiKey(), () => false);
+  const provider = useSyncExternalStore(subscribeToLlmProvider, getLlmProvider, () => "auto");
 
   return (
     <div className="min-h-screen text-[var(--foreground)]">
@@ -40,6 +41,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="status-chip px-3 py-1 text-xs text-[var(--muted)]">
               Тариф: <span className="font-semibold text-[var(--foreground)]">Free</span>
             </div>
+
+            <label className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-white px-3 py-1 text-xs text-[var(--muted)]">
+              <span>Провайдер</span>
+              <select
+                value={provider}
+                onChange={(e) => setLlmProvider(e.target.value)}
+                className="bg-transparent text-xs font-semibold text-[var(--foreground)] outline-none"
+                aria-label="Выбор провайдера LLM"
+              >
+                <option value="auto">Авто</option>
+                <option value="gemini">Gemini</option>
+                <option value="gigachat">GigaChat</option>
+              </select>
+            </label>
 
             <div className="status-chip px-3 py-1 text-xs text-[var(--muted)]">
               API-ключ:{" "}

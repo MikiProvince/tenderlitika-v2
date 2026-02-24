@@ -2,9 +2,17 @@ import re
 import json
 import os
 import logging
-import google.generativeai as genai
-from dotenv import load_dotenv
+import ssl
+import time
+import uuid
+import urllib.request
+import urllib.parse
 from typing import Any, Optional
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -73,17 +81,21 @@ def _extract_json_from_text(s: str) -> dict:
 # ---------- Gemini setup ----------
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "models/gemini-flash-latest")
-_MODEL: genai.GenerativeModel | None = None
+_MODEL: Any | None = None
 _MODEL_INIT_FAILED = False
 
 
-def _get_model() -> genai.GenerativeModel | None:
+def _get_model() -> Any | None:
     global _MODEL
     global _MODEL_INIT_FAILED
 
     if _MODEL is not None:
         return _MODEL
     if _MODEL_INIT_FAILED:
+        return None
+    if genai is None:
+        _MODEL_INIT_FAILED = True
+        logger.warning("google.generativeai is not installed. Gemini extraction disabled.")
         return None
 
     api_key = os.getenv("GEMINI_API_KEY")
@@ -100,6 +112,90 @@ def _get_model() -> genai.GenerativeModel | None:
         _MODEL_INIT_FAILED = True
         logger.exception("Failed to initialize Gemini model. Using regex-only extraction fallback.")
         return None
+
+# ---------- GigaChat setup ----------
+
+GIGACHAT_AUTH_URL = os.getenv("GIGACHAT_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
+GIGACHAT_API_URL = os.getenv("GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1/chat/completions")
+GIGACHAT_MODEL = os.getenv("GIGACHAT_MODEL", "GigaChat")
+GIGACHAT_SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+
+_GIGACHAT_TOKEN: str | None = None
+_GIGACHAT_TOKEN_EXPIRES_AT: float | None = None
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    ca_bundle = os.getenv("GIGACHAT_CA_BUNDLE")
+    if not ca_bundle:
+        return None
+    try:
+        return ssl.create_default_context(cafile=ca_bundle)
+    except Exception:
+        logger.exception("Failed to load GigaChat CA bundle. Falling back to default SSL context.")
+        return None
+
+
+def _http_post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, context=_ssl_context(), timeout=30) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+        return json.loads(raw) if raw else {}
+
+
+def _http_post_form(url: str, headers: dict[str, str], data: dict[str, str]) -> dict:
+    body = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, context=_ssl_context(), timeout=30) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+        return json.loads(raw) if raw else {}
+
+
+def _get_gigachat_access_token() -> str | None:
+    global _GIGACHAT_TOKEN
+    global _GIGACHAT_TOKEN_EXPIRES_AT
+
+    direct_token = os.getenv("GIGACHAT_ACCESS_TOKEN")
+    if direct_token:
+        return direct_token.strip()
+
+    if _GIGACHAT_TOKEN and _GIGACHAT_TOKEN_EXPIRES_AT:
+        if _GIGACHAT_TOKEN_EXPIRES_AT - time.time() > 60:
+            return _GIGACHAT_TOKEN
+
+    auth_key = os.getenv("GIGACHAT_AUTH_KEY") or os.getenv("GIGACHAT_AUTH_HEADER")
+    if not auth_key:
+        logger.warning("GIGACHAT_AUTH_KEY/GIGACHAT_AUTH_HEADER or GIGACHAT_ACCESS_TOKEN is missing. GigaChat extraction disabled.")
+        return None
+
+    auth_header = auth_key.strip()
+    if not auth_header.lower().startswith("basic "):
+        auth_header = f"Basic {auth_header}"
+
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "RqUID": os.getenv("GIGACHAT_RQUID") or str(uuid.uuid4()),
+        "Authorization": auth_header,
+    }
+
+    try:
+        data = _http_post_form(GIGACHAT_AUTH_URL, headers, {"scope": GIGACHAT_SCOPE})
+        token = data.get("access_token")
+        expires_at = data.get("expires_at")
+        if token:
+            _GIGACHAT_TOKEN = token
+            if isinstance(expires_at, (int, float)):
+                if expires_at > 10_000_000_000:
+                    expires_at = expires_at / 1000.0
+                _GIGACHAT_TOKEN_EXPIRES_AT = float(expires_at)
+            return token
+    except Exception:
+        logger.exception("Failed to obtain GigaChat access token.")
+        return None
+
+    logger.warning("GigaChat token response did not contain access_token.")
+    return None
 
 EXTRACTION_PROMPT = """
 Извлеки данные из текста тендера. Верни строго JSON и только JSON:
@@ -146,13 +242,22 @@ BASE_SCHEMA = {
     "supplier_must_hold_stock": False,
 }
 
-def extract_with_llm(text: str) -> dict:
+def _normalize_provider(value: str | None) -> str:
+    if not value:
+        return "auto"
+    value = value.strip().lower()
+    if value in ("gemini", "google"):
+        return "gemini"
+    if value in ("gigachat", "giga"):
+        return "gigachat"
+    if value in ("auto", "default"):
+        return "auto"
+    return "auto"
+
+
+def _extract_with_gemini(prompt_text: str) -> dict:
     model = _get_model()
     if model is None:
-        return {}
-
-    prompt_text = (text or "")[:15000]
-    if not prompt_text.strip():
         return {}
 
     for _ in range(2):
@@ -172,18 +277,113 @@ def extract_with_llm(text: str) -> dict:
 
     return {}
 
+
+def _extract_with_gigachat(prompt_text: str) -> dict:
+    token = _get_gigachat_access_token()
+    if not token:
+        return {}
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+
+    payload = {
+        "model": GIGACHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": EXTRACTION_PROMPT.strip()},
+            {"role": "user", "content": prompt_text},
+        ],
+        "temperature": 0,
+    }
+
+    try:
+        data = _http_post_json(GIGACHAT_API_URL, headers, payload)
+        choices = data.get("choices") or []
+        if not choices:
+            logger.warning("GigaChat response has no choices.")
+            return {}
+        message = (choices[0].get("message") or {})
+        content = message.get("content") or ""
+        parsed = _extract_json_from_text(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        logger.exception("GigaChat extraction failed.")
+
+    return {}
+
+
+def extract_with_llm(text: str, provider_override: str | None = None) -> dict:
+    prompt_text = (text or "")[:15000]
+    if not prompt_text.strip():
+        return {}
+
+    provider = _normalize_provider(provider_override or os.getenv("LLM_PROVIDER"))
+    if provider == "gigachat":
+        return _extract_with_gigachat(prompt_text)
+    if provider == "gemini":
+        return _extract_with_gemini(prompt_text)
+
+    # auto: try Gemini first, then GigaChat
+    result = _extract_with_gemini(prompt_text)
+    if result:
+        return result
+    return _extract_with_gigachat(prompt_text)
+
 # ---------- Regex fallbacks ----------
 
-def extract_nmck_regex(text: str):
-    pattern = r'(\d[\d\s]{3,})(?:\s*)(?:руб(?:\.|лей|ля|ль)?|₽)'
-    match = re.search(pattern, text.lower())
+def _parse_amount(raw: str) -> Optional[float]:
+    if not raw:
+        return None
+    s = raw.replace("\u00A0", " ").strip()
+    s = s.replace(" ", "")
+    if not s:
+        return None
 
-    if match:
-        num = match.group(1).replace(" ", "")
-        try:
-            return float(num)
-        except:
-            return None
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        if re.search(r",\d{1,2}$", s):
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "." in s:
+        if not re.search(r"\.\d{1,2}$", s):
+            s = s.replace(".", "")
+
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def extract_nmck_regex(text: str) -> Optional[float]:
+    t = text or ""
+
+    amount = r"(\d[\d\s\u00A0.,]*\d)"
+    rub = r"(?:\s*(?:руб(?:\.|лей|ля|ль)?|₽))?"
+
+    patterns = [
+        rf"(?:нмцк|нмц|нцмк)[^\d]{{0,40}}{amount}{rub}",
+        rf"(?:начальн[а-я\s()]*цена|цена\s+(?:договора|контракта|лота))[^\d]{{0,60}}{amount}{rub}",
+    ]
+
+    for p in patterns:
+        m = re.search(p, t, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            value = _parse_amount(m.group(1))
+            if value is not None:
+                return value
+
+    generic = re.search(rf"{amount}\s*(?:руб(?:\.|лей|ля|ль)?|₽)", t, flags=re.IGNORECASE)
+    if generic:
+        return _parse_amount(generic.group(1))
 
     return None
 
@@ -217,11 +417,11 @@ def extract_payment_terms_days_regex(text: str) -> Optional[int]:
 
 # ---------- Main entry ----------
 
-def extract_tender_data(text: str) -> dict:
+def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
     t = text or ""
 
     # 1) LLM extraction
-    llm = extract_with_llm(t)
+    llm = extract_with_llm(t, llm_provider)
 
     # 2) Start with schema
     data = dict(BASE_SCHEMA)

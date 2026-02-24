@@ -32,7 +32,7 @@ def test_analyze_returns_expected_payload_with_overrides(client, monkeypatch):
     monkeypatch.setattr(
         app_module,
         "extract_tender_data",
-        lambda text: {"nmck": 120000.0, "payment_terms_days": 30},
+        lambda text, llm_provider=None: {"nmck": 120000.0, "payment_terms_days": 30},
     )
     monkeypatch.setattr(
         app_module,
