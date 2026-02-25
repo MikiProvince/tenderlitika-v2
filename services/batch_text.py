@@ -3,12 +3,15 @@
 from dataclasses import dataclass
 from typing import List
 import io
+import logging
 import os
 import re
 
 from fastapi import HTTPException, UploadFile
 
 from services.document_text import extract_text_from_document
+
+logger = logging.getLogger(__name__)
 
 # optional dependencies (openpyxl for xlsx)
 try:
@@ -80,6 +83,7 @@ async def extract_docs_from_uploads(files: List[UploadFile]) -> List[ExtractedDo
         raise HTTPException(status_code=400, detail=f"Too many files. Max {MAX_FILES}")
 
     docs: List[ExtractedDoc] = []
+    non_empty_count = 0
 
     for uf in files:
         filename = uf.filename or "file"
@@ -107,10 +111,21 @@ async def extract_docs_from_uploads(files: List[UploadFile]) -> List[ExtractedDo
 
         text = _clean_text(text)
         if text:
-            docs.append(ExtractedDoc(filename=filename, ext=ext, text=text))
+            non_empty_count += 1
 
-    if not docs:
+        docs.append(ExtractedDoc(filename=filename, ext=ext, text=text))
+
+    if not docs or non_empty_count == 0:
         raise HTTPException(status_code=400, detail="No text extracted from provided files")
+
+    logger.info(
+        "batch.docs.extracted",
+        extra={
+            "file_count": len(docs),
+            "non_empty_count": non_empty_count,
+            "files": [{"name": d.filename, "chars": len(d.text)} for d in docs],
+        },
+    )
 
     return docs
 
@@ -122,4 +137,23 @@ def build_structured_corpus(docs: List[ExtractedDoc]) -> str:
     for i, d in enumerate(docs, start=1):
         chunks.append(f"\n===== FILE {i}/{len(docs)}: {d.filename} ({d.ext}) =====\n")
         chunks.append(d.text)
-    return "\n".join(chunks).strip()
+    corpus = "\n".join(chunks).strip()
+
+    corpus_lower = corpus.lower()
+    contract_files = [d.filename for d in docs if re.search(r"(договор|контракт|проект)", d.filename.lower())]
+    tech_files = [d.filename for d in docs if re.search(r"(тех|техничес|тз|техзад|специф|requirements)", d.filename.lower())]
+
+    if contract_files:
+        if not any(k in corpus_lower for k in ("оплата", "неустойк", "штраф", "пеня")):
+            logger.warning("contract_text_missing", extra={"files": contract_files})
+
+    if tech_files:
+        if not any(k in corpus_lower for k in ("срок", "партия", "отгруз", "поставка")):
+            logger.warning("tech_text_missing", extra={"files": tech_files})
+
+    logger.info(
+        "batch.corpus.built",
+        extra={"file_count": len(docs), "corpus_chars": len(corpus)},
+    )
+
+    return corpus

@@ -93,6 +93,7 @@ def _run_analysis_pipeline(
     source_type: str,
     source_name: str | None,
     llm_provider: str | None,
+    ingestion_meta: dict | None = None,
 ):
     logger.info(
         "analysis.start",
@@ -116,6 +117,10 @@ def _run_analysis_pipeline(
             },
         )
         raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
+
+    if ingestion_meta:
+        meta = extracted.setdefault("meta", {})
+        meta["ingestion"] = ingestion_meta
 
     danger = find_danger_phrases(text)
     extracted["danger_phrases"] = danger
@@ -194,6 +199,12 @@ async def analyze_tender_batch(
 
     docs = await extract_docs_from_uploads(files)
     corpus = build_structured_corpus(docs)
+    ingestion_meta = {
+        "file_count": len(docs),
+        "files": [{"name": d.filename, "chars": len(d.text)} for d in docs],
+        "corpus_chars": len(corpus),
+        "corpus_preview": corpus[:4000],
+    }
 
     result = _run_analysis_pipeline(
         text=corpus,
@@ -204,6 +215,7 @@ async def analyze_tender_batch(
         source_type="batch",
         source_name=f"Пакет документов ({len(docs)})",
         llm_provider=llm_provider,
+        ingestion_meta=ingestion_meta,
     )
     result["source"] = {
         "type": "batch",

@@ -2,6 +2,18 @@ backend:
 cd D:\DEV\tenderlitika_v2
 .\venv\Scripts\Activate.ps1
 uvicorn main:app --reload  
+ocr (optional):
+install tesseract (windows):
+winget install --id UB-Mannheim.TesseractOCR
+or:
+choco install tesseract
+python deps:
+pip install pytesseract pillow
+env (optional):
+setx PDF_OCR 1
+setx PDF_OCR_LANG "rus+eng"
+setx PDF_OCR_DPI 200
+setx PDF_OCR_MIN_CHARS 40
 frontend:
 cd D:\DEV\tenderlitika_v2\frontend
 npm run dev
