@@ -1,4 +1,8 @@
-﻿from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Depends
+﻿import logging
+import time
+import uuid
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -6,6 +10,7 @@ from models.tender import TenderInput
 from core.extractor import extract_tender_data
 from core.risk_engine import calculate_risk
 from core.financial_model import calculate_financials, calculate_safe_cost_price
+from core.logging_config import setup_logging, bind_request_id, reset_request_id
 
 from services.pdf_text import extract_text_from_pdf_bytes
 from services.document_text import extract_text_from_document
@@ -23,6 +28,9 @@ from typing import List
 from services.batch_text import extract_docs_from_uploads, build_structured_corpus
 
 
+setup_logging()
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
 
 app.add_middleware(
@@ -39,6 +47,42 @@ app.add_middleware(
 app.include_router(auth_router)
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    token = bind_request_id(request_id)
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        logger.info(
+            "request.complete",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+        )
+        response.headers["X-Request-ID"] = request_id
+        return response
+    except Exception:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        logger.exception(
+            "request.error",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 500,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+    finally:
+        reset_request_id(token)
+
+
+
 def _run_analysis_pipeline(
     *,
     text: str,
@@ -50,9 +94,27 @@ def _run_analysis_pipeline(
     source_name: str | None,
     llm_provider: str | None,
 ):
+    logger.info(
+        "analysis.start",
+        extra={
+            "user_id": user.id,
+            "source_type": source_type,
+            "source_name": source_name or "-",
+            "text_chars": len(text),
+            "llm_provider": llm_provider or "auto",
+        },
+    )
     try:
         extracted = extract_tender_data(text, llm_provider)
     except Exception as e:
+        logger.exception(
+            "analysis.extract_failed",
+            extra={
+                "user_id": user.id,
+                "source_type": source_type,
+                "source_name": source_name or "-",
+            },
+        )
         raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
 
     danger = find_danger_phrases(text)
@@ -90,6 +152,16 @@ def _run_analysis_pipeline(
         input_cost_price=float(cost_price) if cost_price is not None else None,
         input_margin_percent=float(planned_margin_percent) if planned_margin_percent is not None else None,
         safe_cost_price=None if safe_cost is None else float(safe_cost),
+    )
+
+    logger.info(
+        "analysis.complete",
+        extra={
+            "user_id": user.id,
+            "analysis_id": row.id,
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+        },
     )
 
     return {
@@ -341,6 +413,7 @@ def delete_analysis(
 
     db.delete(row)
     db.commit()
+    logger.info("analysis.deleted", extra={"user_id": user.id, "analysis_id": analysis_id})
     return {"ok": True}
 
 
@@ -351,4 +424,5 @@ def clear_analyses(
 ):
     deleted = db.query(Analysis).filter(Analysis.user_id == user.id).delete(synchronize_session=False)
     db.commit()
+    logger.info("analysis.cleared", extra={"user_id": user.id, "deleted_count": deleted})
     return {"ok": True, "deleted_count": deleted}

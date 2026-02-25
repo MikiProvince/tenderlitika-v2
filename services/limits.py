@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from db.models import Analysis, User
+
+logger = logging.getLogger(__name__)
 
 PLAN_LIMITS = {
     "free": 30,       # 30 анализов / месяц
@@ -28,6 +32,10 @@ def check_monthly_quota(db: Session, user: User) -> None:
     )
 
     if used >= limit:
+        logger.warning(
+            "quota.exceeded",
+            extra={"user_id": user.id, "plan": user.plan, "used": used, "limit": limit},
+        )
         raise HTTPException(
             status_code=429,
             detail=f"Quota exceeded: {used}/{limit} analyses this month for plan={user.plan}",

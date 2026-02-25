@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -9,6 +11,7 @@ from db.models import User, ApiKey
 from services.auth import hash_password, verify_password, generate_api_key, hash_api_key, last4
 from services.current_user import get_current_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -47,6 +50,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(u)
 
+    logger.info("auth.signup", extra={"user_id": u.id, "email": u.email})
     return {"user_id": u.id, "email": u.email, "plan": u.plan}
 
 @router.post("/api-keys")
@@ -82,6 +86,11 @@ def create_api_key(
     db.commit()
     db.refresh(row)
 
+    logger.info(
+        "auth.api_key_created",
+        extra={"user_id": user.id, "key_id": row.id, "key_name": row.name},
+    )
+
     # ВАЖНО: показываем ключ только один раз
     return {"api_key": plain, "key_id": row.id, "last4": row.last4}
 
@@ -97,4 +106,5 @@ def revoke_key(key_id: int, user: User = Depends(get_current_user), db: Session 
 
     row.is_active = False
     db.commit()
+    logger.info("auth.api_key_revoked", extra={"user_id": user.id, "key_id": row.id})
     return {"revoked": True, "key_id": key_id}
