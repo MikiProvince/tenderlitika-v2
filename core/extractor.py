@@ -14,6 +14,11 @@ try:
 except Exception:
     genai = None
 from dotenv import load_dotenv
+from services.extraction.candidates import mine_all_candidates
+from services.extraction.normalize import normalize_text
+from services.extraction.quality import validate_extracted_data as validate_quality_data
+from services.extraction.retrieval import retrieve_sections
+from services.extraction.select import apply_selected_to_extracted_data, select_best_candidate
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -1238,12 +1243,32 @@ def extract_penalties_with_evidence(text: str, markers: list[tuple[int, str]]) -
 # ---------- Main entry ----------
 
 def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
-    t = _normalize_extraction_text(text or "")
+    t = normalize_text(text or "")
     markers = _parse_file_markers(t)
 
     data = dict(BASE_SCHEMA)
     evidence: dict[str, dict] = {}
     meta = data.setdefault("meta", {})
+
+    retrieved_sections = retrieve_sections(t)
+    mined_candidates = mine_all_candidates(t)
+    selected_candidates = {
+        "nmck": select_best_candidate(mined_candidates.get("nmck", [])),
+        "payment": select_best_candidate(mined_candidates.get("payment", [])),
+        "execution": select_best_candidate(mined_candidates.get("execution", [])),
+        "penalties": select_best_candidate(mined_candidates.get("penalties", [])),
+    }
+    apply_selected_to_extracted_data(data, selected_candidates)
+    logger.info(
+        "extract.v3.candidates",
+        extra={
+            "candidate_counts": {field: len(items) for field, items in mined_candidates.items()},
+            "selected_candidate_ids": {
+                field: (candidate.get("id") if candidate else None)
+                for field, candidate in selected_candidates.items()
+            },
+        },
+    )
 
     nmck_value, nmck_ev = extract_nmck_with_evidence(t, markers)
     if nmck_value is not None:
@@ -1360,6 +1385,16 @@ def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
         errors_after = validate_extracted_data(data)
         if errors_after:
             meta["validation_errors"] = errors_after
+
+    quality = validate_quality_data(data, t, retrieved_sections)
+    meta["quality"] = quality
+    logger.info(
+        "extract.v3.quality",
+        extra={
+            "completeness_score": quality.get("completeness_score"),
+            "missing_reasons": quality.get("missing_reasons"),
+        },
+    )
 
     if evidence:
         data["extraction_evidence"] = evidence

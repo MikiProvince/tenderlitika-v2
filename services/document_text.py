@@ -6,6 +6,7 @@ import re
 from zipfile import ZipFile
 from xml.etree import ElementTree
 
+from services.extraction.normalize import normalize_text
 from services.pdf_text import extract_text_from_pdf_bytes
 
 
@@ -13,9 +14,7 @@ _MAX_TEXT_CHARS = 120_000
 
 
 def _normalize_text(text: str, max_chars: int = _MAX_TEXT_CHARS) -> str:
-    text = text.replace("\r", "\n")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()[:max_chars]
+    return normalize_text(text)[:max_chars]
 
 
 def _extract_text_from_docx_bytes(docx_bytes: bytes, max_chars: int = _MAX_TEXT_CHARS) -> str:

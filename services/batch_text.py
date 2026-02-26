@@ -10,6 +10,7 @@ import re
 from fastapi import HTTPException, UploadFile
 
 from services.document_text import extract_text_from_document
+from services.extraction.normalize import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,7 @@ class ExtractedDoc:
 
 
 def _clean_text(s: str) -> str:
-    s = s.replace("\x00", " ")
-    s = re.sub(r"[ \t]+", " ", s)
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    return s.strip()
+    return normalize_text(s)
 
 
 def _extract_text_txt(data: bytes) -> str:
@@ -137,7 +135,7 @@ def build_structured_corpus(docs: List[ExtractedDoc]) -> str:
     for i, d in enumerate(docs, start=1):
         chunks.append(f"\n===== FILE {i}/{len(docs)}: {d.filename} ({d.ext}) =====\n")
         chunks.append(d.text)
-    corpus = "\n".join(chunks).strip()
+    corpus = normalize_text("\n".join(chunks))
 
     corpus_lower = corpus.lower()
     contract_files = [d.filename for d in docs if re.search(r"(договор|контракт|проект)", d.filename.lower())]
