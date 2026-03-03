@@ -18,7 +18,7 @@ def _pct_amount(nmck: Any, pct: Any) -> float | None:
 def _is_num(x: Any) -> bool:
     return isinstance(x, (int, float))
 
-def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
+def calculate_risk(extracted: Dict[str, Any], quality_gate: Dict[str, Any] | None = None) -> Tuple[int, str, List[str]]:
     """
     Возвращает:
       - risk_score: 0..10
@@ -27,6 +27,7 @@ def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
     """
     score = 0
     reasons: List[str] = []
+    missing_reasons = (quality_gate or {}).get("missing_reasons") or {}
 
     nmck = extracted.get("nmck")
     execution_days = extracted.get("execution_days")
@@ -75,9 +76,16 @@ def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
             score += 1
             reasons.append(f"Срок оплаты: {int(payment_terms_days)} дней — возможен кассовый разрыв.")
     else:
-        # было +1 — оставим, но формулировка нейтральнее
-        score += 1
-        reasons.append("Не найден срок оплаты — риск неопределенности по кэшу.")
+        payment_reason = missing_reasons.get("payment_terms_days")
+        if payment_reason in ("partial_input", "not_provided_in_text", "absent_in_docs"):
+            score += 1
+            reasons.append("Недостаточно контекста: условия оплаты не обнаружены в текущем наборе документов (возможно в приложениях).")
+        elif payment_reason == "parse_failed":
+            score += 2
+            reasons.append("Раздел оплаты найден, но срок не распознан — требуется проверка.")
+        else:
+            score += 1
+            reasons.append("Не найден срок оплаты — риск неопределенности по кэшу.")
 
     # 3) Срок исполнения: короткий при большой сумме — риск сорвать
     if isinstance(execution_days, (int, float)) and isinstance(nmck, (int, float)):
@@ -100,8 +108,14 @@ def calculate_risk(extracted: Dict[str, Any]) -> Tuple[int, str, List[str]]:
             score += 1
             reasons.append(f"Пеня: {penalty}%/день — заметный штрафной риск.")
     else:
-        # раньше было +1. Я бы сделал 0, чтобы не наказывать за слабую экстракцию.
-        reasons.append("Пеня/штрафы не извлечены — проверь вручную (экстрактор мог не распознать формулировку).")
+        penalty_reason = missing_reasons.get("penalty_percent_per_day")
+        if penalty_reason in ("partial_input", "not_provided_in_text", "absent_in_docs"):
+            reasons.append("Недостаточно контекста: условия по пеням/штрафам не обнаружены в текущем наборе документов (возможно в приложениях).")
+        elif penalty_reason == "parse_failed":
+            score += 1
+            reasons.append("Раздел ответственности найден, но пеня/штраф не распознаны — требуется проверка.")
+        else:
+            reasons.append("Пеня/штрафы не извлечены — проверь вручную (экстрактор мог не распознать формулировку).")
 
     # 5) Аванс
     if isinstance(advance, (int, float)):

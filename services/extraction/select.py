@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from services.extraction.candidates import Candidate
@@ -75,6 +76,13 @@ def _keyword_strength(candidate: Candidate) -> int:
     return sum(1 for hit in hits if any(strong in hit for strong in strength_kw))
 
 
+def _stable_value_repr(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(value)
+
+
 def select_best_candidate(cands: list[Candidate]) -> Candidate | None:
     sane = [candidate for candidate in cands if _candidate_is_sane(candidate)]
     if not sane:
@@ -82,11 +90,13 @@ def select_best_candidate(cands: list[Candidate]) -> Candidate | None:
 
     sane.sort(
         key=lambda candidate: (
-            float(candidate.get("confidence") or 0.0),
-            _keyword_strength(candidate),
-            len(candidate.get("keyword_hits") or []),
+            -float(candidate.get("confidence") or 0.0),
+            str(candidate.get("field") or ""),
+            _stable_value_repr(candidate.get("value")),
+            int((candidate.get("location") or {}).get("offset") or 0),
+            -_keyword_strength(candidate),
+            -len(candidate.get("keyword_hits") or []),
         ),
-        reverse=True,
     )
     return sane[0]
 

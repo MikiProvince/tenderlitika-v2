@@ -1,5 +1,6 @@
 import re
 import json
+import math
 import os
 import logging
 import ssl
@@ -1240,6 +1241,108 @@ def extract_penalties_with_evidence(text: str, markers: list[tuple[int, str]]) -
 
     return result, evidence
 
+
+def _is_non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _evidence_source_for_field(extracted_data: dict, field: str) -> str:
+    evidence = (extracted_data.get("extraction_evidence") or {}).get(field)
+    if isinstance(evidence, dict):
+        source = evidence.get("source")
+        if isinstance(source, str) and source:
+            return source
+    return "legacy"
+
+
+def consolidate_extraction(extracted_data: dict) -> dict:
+    data = extracted_data or {}
+    meta = data.setdefault("meta", {})
+
+    legacy_fields = [
+        "nmck",
+        "payment_terms_days",
+        "execution_days",
+        "penalty_percent_per_day",
+        "fine_percent",
+    ]
+    for field in legacy_fields:
+        data.setdefault(field, None)
+
+    sources: dict[str, str] = {}
+    chosen_values: dict[str, Any] = {}
+
+    payment_meta = meta.get("payment") if isinstance(meta.get("payment"), dict) else {}
+    penalties_meta = meta.get("penalties") if isinstance(meta.get("penalties"), dict) else {}
+
+    derived_payment_days: int | None = None
+    if _is_non_empty(payment_meta.get("final_days_calendar_alt")):
+        try:
+            derived_payment_days = int(round(float(payment_meta.get("final_days_calendar_alt"))))
+            sources["payment_terms_days"] = "meta"
+        except Exception:
+            derived_payment_days = None
+    elif _is_non_empty(payment_meta.get("final_days_working")):
+        try:
+            derived_payment_days = int(math.ceil(float(payment_meta.get("final_days_working")) * 1.4))
+            sources["payment_terms_days"] = "meta"
+        except Exception:
+            derived_payment_days = None
+    elif _is_non_empty(payment_meta.get("advance_days_calendar")):
+        try:
+            derived_payment_days = int(round(float(payment_meta.get("advance_days_calendar"))))
+            sources["payment_terms_days"] = "meta"
+        except Exception:
+            derived_payment_days = None
+
+    if derived_payment_days is not None:
+        data["payment_terms_days"] = derived_payment_days
+    elif _is_non_empty(data.get("payment_terms_days")):
+        sources["payment_terms_days"] = _evidence_source_for_field(data, "payment_terms_days")
+    else:
+        data["payment_terms_days"] = None
+        sources["payment_terms_days"] = "legacy"
+
+    penalty_meta_value = penalties_meta.get("penalty_percent_per_day")
+    if _is_non_empty(penalty_meta_value):
+        data["penalty_percent_per_day"] = penalty_meta_value
+        sources["penalty_percent_per_day"] = "meta"
+    elif _is_non_empty(data.get("penalty_percent_per_day")):
+        sources["penalty_percent_per_day"] = _evidence_source_for_field(data, "penalty_percent_per_day")
+    else:
+        data["penalty_percent_per_day"] = None
+        sources["penalty_percent_per_day"] = "legacy"
+
+    fine_meta_value = penalties_meta.get("fine_percent")
+    if _is_non_empty(fine_meta_value):
+        data["fine_percent"] = fine_meta_value
+        sources["fine_percent"] = "meta"
+    elif _is_non_empty(data.get("fine_percent")):
+        sources["fine_percent"] = _evidence_source_for_field(data, "fine_percent")
+    else:
+        data["fine_percent"] = None
+        sources["fine_percent"] = "legacy"
+
+    for field in ("nmck", "execution_days"):
+        if _is_non_empty(data.get(field)):
+            sources[field] = _evidence_source_for_field(data, field)
+        else:
+            data[field] = None
+            sources[field] = "legacy"
+
+    for field in legacy_fields:
+        chosen_values[field] = data.get(field)
+
+    meta["consolidation"] = {
+        "sources": sources,
+        "chosen_values": chosen_values,
+    }
+    return data
+
 # ---------- Main entry ----------
 
 def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
@@ -1386,6 +1489,38 @@ def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
         if errors_after:
             meta["validation_errors"] = errors_after
 
+    if evidence:
+        data["extraction_evidence"] = evidence
+
+    consolidate_extraction(data)
+    consolidation = (data.get("meta") or {}).get("consolidation") or {}
+    consolidation_sources = consolidation.get("sources") or {}
+
+    payment_keywords_found = bool(retrieved_sections.get("payment"))
+    penalties_keywords_found = bool(retrieved_sections.get("penalties"))
+    payment_struct_present = isinstance((data.get("meta") or {}).get("payment"), dict)
+    penalties_struct_present = isinstance((data.get("meta") or {}).get("penalties"), dict)
+    logger.info(
+        "extract.v3.payment",
+        extra={
+            "keywords_found": payment_keywords_found,
+            "parsed_struct_present": payment_struct_present,
+            "payment_terms_days": data.get("payment_terms_days"),
+            "source": consolidation_sources.get("payment_terms_days", "legacy"),
+        },
+    )
+    logger.info(
+        "extract.v3.penalties",
+        extra={
+            "keywords_found": penalties_keywords_found,
+            "parsed_struct_present": penalties_struct_present,
+            "penalty_percent_per_day": data.get("penalty_percent_per_day"),
+            "fine_percent": data.get("fine_percent"),
+            "penalty_source": consolidation_sources.get("penalty_percent_per_day", "legacy"),
+            "fine_source": consolidation_sources.get("fine_percent", "legacy"),
+        },
+    )
+
     quality = validate_quality_data(data, t, retrieved_sections)
     meta["quality"] = quality
     logger.info(
@@ -1395,9 +1530,6 @@ def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
             "missing_reasons": quality.get("missing_reasons"),
         },
     )
-
-    if evidence:
-        data["extraction_evidence"] = evidence
 
     return data
 

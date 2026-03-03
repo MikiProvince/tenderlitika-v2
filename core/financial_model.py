@@ -1,58 +1,53 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
-def calculate_financials(extracted: Dict[str, Any], cost_price: float, margin_percent: float) -> Tuple[float, Optional[float]]:
-    """
-    Возвращает:
-      - expected_roi_percent
-      - rough_cash_gap (грубая оценка кассового разрыва), если хватает данных
-    """
-    # ROI: ожидаемая прибыль / себестоимость
-    expected_profit = cost_price * (margin_percent / 100.0)
-    expected_roi = (expected_profit / cost_price) * 100.0 if cost_price > 0 else 0.0
 
-    # Cash gap (очень грубо): сколько денег "висит" до оплаты
-    payment_terms_days = extracted.get("payment_terms_days")
-    execution_days = extracted.get("execution_days")
+def calculate_financials(
+    *,
+    nmck: float,
+    cost_price: float,
+    margin_percent: float,
+    payment_terms_days: float | int | None = None,
+    execution_days: float | int | None = None,
+) -> Tuple[float, Optional[float]]:
+    """
+    Stateless financial calculation based only on explicit parameters.
+    """
+    if not isinstance(nmck, (int, float)) or float(nmck) <= 0:
+        return 0.0, None
+
+    if not isinstance(cost_price, (int, float)) or float(cost_price) <= 0:
+        return 0.0, None
+
+    if not isinstance(margin_percent, (int, float)):
+        margin_percent = 0.0
+
+    expected_profit = float(cost_price) * (float(margin_percent) / 100.0)
+    expected_roi = (expected_profit / float(cost_price)) * 100.0
 
     cash_gap = None
-    if isinstance(payment_terms_days, (int, float)) and isinstance(execution_days, (int, float)) and execution_days > 0:
-        # считаем, что расходы равномерно в течение исполнения
-        daily_burn = cost_price / float(execution_days)
+    if (
+        isinstance(payment_terms_days, (int, float))
+        and isinstance(execution_days, (int, float))
+        and float(execution_days) > 0
+        and float(payment_terms_days) >= 0
+    ):
+        daily_burn = float(cost_price) / float(execution_days)
         cash_gap = daily_burn * float(payment_terms_days)
 
-    return expected_roi, cash_gap
+    return float(expected_roi), cash_gap
 
-def calculate_safe_cost_price(extracted: dict) -> float | None:
 
-    nmck = extracted.get("nmck")
-    if not isinstance(nmck, (int, float)):
+def calculate_safe_cost_price(*, nmck: float, roi_percent: float) -> float | None:
+    """
+    Deterministic safe cost formula:
+      safe_cost = nmck / (1 + roi_percent / 100)
+    """
+    if not isinstance(nmck, (int, float)) or float(nmck) <= 0:
+        return None
+    if not isinstance(roi_percent, (int, float)):
         return None
 
-    contract_sec = extracted.get("contract_security_percent") or 0
-
-    # базовая безопасная маржа
-    safety_margin = 0.10
-
-    # нагрузка гарантий (не 1:1, потому что это не полная потеря денег)
-    guarantee_load = (contract_sec / 100) * 0.5
-
-    # ловушки
-    trap_penalty = 0.0
-
-    if extracted.get("payment_after_full_delivery"):
-        trap_penalty += 0.05
-
-    if extracted.get("delivery_by_customer_requests"):
-        trap_penalty += 0.05
-
-    if extracted.get("supplier_must_hold_stock"):
-        trap_penalty += 0.03
-
-    if extracted.get("has_vague_acceptance_terms"):
-        trap_penalty += 0.04
-
-    total_risk_buffer = safety_margin + guarantee_load + trap_penalty
-
-    safe_cost = nmck * (1 - total_risk_buffer)
-
-    return round(safe_cost, 2)
+    denominator = 1.0 + (float(roi_percent) / 100.0)
+    if denominator <= 0:
+        return None
+    return round(float(nmck) / denominator, 2)
