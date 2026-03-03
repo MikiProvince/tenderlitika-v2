@@ -16,6 +16,51 @@ logger = logging.getLogger(__name__)
 MAX_FILES = 25
 MAX_FILE_BYTES = 15 * 1024 * 1024  # 15MB на файл (можно поменять)
 ALLOWED_EXT = {".pdf", ".txt", ".doc", ".docx", ".xlsx", ".csv"}
+ROLE_THRESHOLD = 3
+
+CONTRACT_ANCHORS = [
+    "предмет контракта",
+    "порядок оплаты",
+    "оплата",
+    "платеж",
+    "платёж",
+    "расчет",
+    "расчёт",
+    "аванс",
+    "предоплата",
+    "ответственность",
+    "неустойк",
+    "штраф",
+    "пеня",
+    "1/300",
+    "ключев",
+]
+
+TECH_ANCHORS = [
+    "техничес",
+    "требован",
+    "тз",
+    "спецификац",
+    "описание объекта",
+    "поставка",
+    "отгруз",
+    "партия",
+    "срок поставки",
+]
+
+PRICE_ANCHORS = [
+    "нмцк",
+    "начальная (максимальная) цена",
+    "цена контракта",
+    "обоснование нмц",
+    "расчет нмц",
+    "итого",
+    "цена, руб",
+]
+
+CONTRACT_FILENAME_RE = re.compile(r"(контракт|договор|проект)")
+TECH_FILENAME_RE = re.compile(r"(тех|тз|требован|описание)")
+PRICE_FILENAME_RE = re.compile(r"(нмц|обосн)")
 
 
 @dataclass
@@ -27,6 +72,37 @@ class ExtractedDoc:
 
 def _clean_text(s: str) -> str:
     return normalize_text(s)
+
+
+def _score_doc_role(doc: ExtractedDoc) -> dict:
+    lowered_text = (doc.text or "").lower()
+    lowered_name = (doc.filename or "").lower()
+
+    contract_hits = [anchor for anchor in CONTRACT_ANCHORS if anchor in lowered_text]
+    tech_hits = [anchor for anchor in TECH_ANCHORS if anchor in lowered_text]
+    price_hits = [anchor for anchor in PRICE_ANCHORS if anchor in lowered_text]
+
+    contract_score = sum(lowered_text.count(anchor) for anchor in CONTRACT_ANCHORS)
+    tech_score = sum(lowered_text.count(anchor) for anchor in TECH_ANCHORS)
+    price_score = sum(lowered_text.count(anchor) for anchor in PRICE_ANCHORS)
+
+    if CONTRACT_FILENAME_RE.search(lowered_name):
+        contract_score += 2
+    if TECH_FILENAME_RE.search(lowered_name):
+        tech_score += 2
+    if PRICE_FILENAME_RE.search(lowered_name):
+        price_score += 2
+
+    return {
+        "contract_score": int(contract_score),
+        "tech_score": int(tech_score),
+        "price_score": int(price_score),
+        "anchors": {
+            "contract": contract_hits,
+            "tech": tech_hits,
+            "price": price_hits,
+        },
+    }
 
 
 async def extract_docs_from_uploads(files: List[UploadFile]) -> List[ExtractedDoc]:
@@ -88,15 +164,52 @@ def build_structured_corpus(docs: List[ExtractedDoc]) -> str:
         chunks.append(d.text)
     corpus = normalize_text("\n".join(chunks))
 
-    corpus_lower = corpus.lower()
-    contract_files = [d.filename for d in docs if re.search(r"(договор|контракт|проект)", d.filename.lower())]
-    tech_files = [d.filename for d in docs if re.search(r"(тех|техничес|тз|техзад|специф|requirements)", d.filename.lower())]
+    scored_docs: list[dict] = []
+    for doc in docs:
+        scored_docs.append({"doc": doc, "score": _score_doc_role(doc)})
 
-    if contract_files and not any(k in corpus_lower for k in ("оплата", "неустойк", "штраф", "пеня")):
-        logger.warning("contract_text_missing", extra={"files": contract_files})
+    logger.info(
+        "batch.docs.scored",
+        extra={
+            "docs": [
+                {
+                    "name": item["doc"].filename,
+                    "chars": len(item["doc"].text),
+                    "contract_score": item["score"]["contract_score"],
+                    "tech_score": item["score"]["tech_score"],
+                    "price_score": item["score"]["price_score"],
+                }
+                for item in scored_docs
+            ]
+        },
+    )
 
-    if tech_files and not any(k in corpus_lower for k in ("срок", "партия", "отгруз", "поставка")):
-        logger.warning("tech_text_missing", extra={"files": tech_files})
+    contract_docs = [
+        item
+        for item in scored_docs
+        if CONTRACT_FILENAME_RE.search(item["doc"].filename.lower()) or item["score"]["contract_score"] >= ROLE_THRESHOLD
+    ]
+    tech_docs = [
+        item
+        for item in scored_docs
+        if TECH_FILENAME_RE.search(item["doc"].filename.lower()) or item["score"]["tech_score"] >= ROLE_THRESHOLD
+    ]
+
+    for item in contract_docs:
+        doc = item["doc"]
+        contract_anchors = item["score"]["anchors"]["contract"]
+        if not doc.text.strip():
+            logger.warning("contract_text_empty", extra={"doc_filename": doc.filename})
+        elif not contract_anchors:
+            logger.warning("contract_text_no_anchors", extra={"doc_filename": doc.filename})
+
+    for item in tech_docs:
+        doc = item["doc"]
+        tech_anchors = item["score"]["anchors"]["tech"]
+        if not doc.text.strip():
+            logger.warning("tech_text_empty", extra={"doc_filename": doc.filename})
+        elif not tech_anchors:
+            logger.warning("tech_text_no_anchors", extra={"doc_filename": doc.filename})
 
     logger.info(
         "batch.corpus.built",

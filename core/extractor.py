@@ -19,6 +19,7 @@ from services.extraction.candidates import mine_all_candidates
 from services.extraction.normalize import normalize_text
 from services.extraction.quality import validate_extracted_data as validate_quality_data
 from services.extraction.retrieval import retrieve_sections
+from services.extraction.retrieval_snippets import build_llm_context_with_meta
 from services.extraction.select import apply_selected_to_extracted_data, select_best_candidate
 
 load_dotenv()
@@ -659,43 +660,85 @@ def _extract_with_provider(provider: str, prompt_text: str) -> dict:
     return _extract_with_gemini(prompt_text)
 
 
-def extract_with_llm(text: str, provider_override: str | None = None) -> dict:
+def extract_with_llm(
+    text: str,
+    provider_override: str | None = None,
+    meta_out: dict[str, Any] | None = None,
+) -> dict:
     raw_text = text or ""
     if not raw_text.strip():
         return {}
 
     provider = _normalize_provider(provider_override or os.getenv("LLM_PROVIDER"))
-    chunk_size = _get_int_env("LLM_CHUNK_SIZE", 15000)
-    overlap = _get_int_env("LLM_CHUNK_OVERLAP", 1500)
-    max_chunks = _get_int_env("LLM_MAX_CHUNKS", 8)
+    context_cap = _get_int_env("LLM_CONTEXT_CAP", 20_000)
+    retrieval_window = _get_int_env("LLM_RETRIEVAL_WINDOW", 900)
+    retrieval_max_snippets = _get_int_env("LLM_RETRIEVAL_SNIPPETS", 10)
+    llm_context, llm_context_meta = build_llm_context_with_meta(
+        raw_text,
+        total_cap=context_cap,
+        window=retrieval_window,
+        max_snippets_per_section=retrieval_max_snippets,
+    )
 
-    if len(raw_text) <= chunk_size:
-        result = _extract_with_provider(provider, raw_text)
+    section_counts = (llm_context_meta.get("section_counts") or {})
+    retrieval_counts = {
+        "price_snippets": int(section_counts.get("price", 0)),
+        "payment_snippets": int(section_counts.get("payment", 0)),
+        "liability_snippets": int(section_counts.get("liability", 0)),
+        "execution_snippets": int(section_counts.get("execution", 0)),
+    }
+    if isinstance(meta_out, dict):
+        meta_out["retrieval"] = retrieval_counts
+
+    if llm_context.strip():
+        llm_input = llm_context[:context_cap]
+        logger.info(
+            "llm.context.built",
+            extra={
+                "text_chars": len(raw_text),
+                "context_chars": len(llm_input),
+                "context_cap": context_cap,
+                **retrieval_counts,
+            },
+        )
+        result = _extract_with_provider(provider, llm_input)
         if not result:
             return {}
         return _merge_llm_results([result], raw_text)
 
-    chunks = _iter_chunks(raw_text, chunk_size, overlap, max_chunks)
+    fallback_cap = _get_int_env("LLM_FALLBACK_TEXT_CAP", 12_000)
+    fallback_text = raw_text[: max(1_000, fallback_cap)]
+    logger.warning(
+        "llm.context.empty_fallback",
+        extra={
+            "text_chars": len(raw_text),
+            "fallback_chars": len(fallback_text),
+            "fallback_cap": fallback_cap,
+        },
+    )
+
+    chunk_size = min(_get_int_env("LLM_CHUNK_SIZE", 15_000), len(fallback_text))
+    overlap = min(_get_int_env("LLM_CHUNK_OVERLAP", 1_500), max(0, chunk_size - 1))
+    max_chunks = _get_int_env("LLM_MAX_CHUNKS", 8)
+
+    if len(fallback_text) <= chunk_size:
+        result = _extract_with_provider(provider, fallback_text)
+        if not result:
+            return {}
+        return _merge_llm_results([result], fallback_text)
+
+    chunks = _iter_chunks(fallback_text, chunk_size, overlap, max_chunks)
     if chunks:
         logger.info(
             "llm.chunking",
             extra={
-                "text_chars": len(raw_text),
+                "text_chars": len(fallback_text),
                 "chunk_size": chunk_size,
                 "overlap": overlap,
                 "max_chunks": max_chunks,
+                "mode": "fallback",
             },
         )
-        if chunks[-1][1] < len(raw_text):
-            logger.warning(
-                "llm.chunking.truncated",
-                extra={
-                    "text_chars": len(raw_text),
-                    "chunk_size": chunk_size,
-                    "overlap": overlap,
-                    "max_chunks": max_chunks,
-                },
-            )
 
     results: list[dict] = []
     for start, end, chunk in chunks:
@@ -709,7 +752,7 @@ def extract_with_llm(text: str, provider_override: str | None = None) -> dict:
         if result:
             results.append(result)
 
-    return _merge_llm_results(results, raw_text)
+    return _merge_llm_results(results, fallback_text)
 
 
 def _call_llm_gigachat(system_prompt: str, user_prompt: str) -> dict:
@@ -1403,7 +1446,11 @@ def extract_tender_data(text: str, llm_provider: str | None = None) -> dict:
         evidence[key] = ev
 
     # LLM semantic helper (only fill missing or invalid)
-    llm = extract_with_llm(t, llm_provider)
+    llm_meta: dict[str, Any] = {}
+    llm = extract_with_llm(t, llm_provider, llm_meta)
+    retrieval_meta = llm_meta.get("retrieval")
+    if isinstance(retrieval_meta, dict):
+        meta["retrieval"] = retrieval_meta
 
     def apply_llm_numeric(field: str, value: Any, keywords: list[str], source: str = "llm") -> None:
         if value is None:

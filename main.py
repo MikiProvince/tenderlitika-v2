@@ -17,6 +17,7 @@ from services.pdf_text import extract_text_from_pdf_bytes
 from services.document_text import extract_text_from_document
 from services.extraction.corpus_awareness import build_quality_gate
 from services.extraction_v3.pipeline import run_pipeline as run_pipeline_v3
+from services.evi_extractor.pipeline import run_evi_extractor
 from services.analysis_store import save_analysis
 from services.current_user import get_current_user
 from services.limits import check_monthly_quota
@@ -92,6 +93,7 @@ def quality_gate(extracted_data: dict, corpus_text: str, input_mode: str) -> dic
 def can_compute_financials(extracted_data: dict) -> tuple[bool, list[str]]:
     meta = extracted_data.get("meta") or {}
     corpus = meta.get("corpus") or {}
+    evi_meta = meta.get("evi_extractor") or {}
     nmck = extracted_data.get("nmck")
 
     nmck_is_valid = (
@@ -107,7 +109,11 @@ def can_compute_financials(extracted_data: dict) -> tuple[bool, list[str]]:
     # Partial corpus should downgrade confidence/verdict, but not block deterministic financial math.
     if bool(corpus.get("is_partial", False)):
         reasons.append("partial_input")
+    if bool(evi_meta.get("is_partial_for_price")):
+        reasons.append("partial_price_context")
 
+    if bool(evi_meta.get("is_partial_for_price")):
+        return False, reasons
     return nmck_is_valid, reasons
 
 
@@ -145,6 +151,10 @@ def _new_pipeline_enabled() -> bool:
     return os.getenv("NEW_PIPELINE", "false").lower() == "true"
 
 
+def _evi_extractor_enabled() -> bool:
+    return os.getenv("EVI_EXTRACTOR", "false").lower() == "true"
+
+
 
 def _run_analysis_pipeline(
     *,
@@ -171,9 +181,16 @@ def _run_analysis_pipeline(
             "llm_provider": llm_provider or "auto",
         },
     )
-    use_new_pipeline = _new_pipeline_enabled()
+    use_evi_extractor = _evi_extractor_enabled()
+    use_new_pipeline = _new_pipeline_enabled() and not use_evi_extractor
     try:
-        if use_new_pipeline:
+        if use_evi_extractor:
+            extracted = run_evi_extractor(
+                files_text=files_text or [],
+                manual_text=manual_text if manual_text is not None else text,
+                extracted_data_existing={},
+            )
+        elif use_new_pipeline:
             extracted = run_pipeline_v3(
                 files_text=files_text or [],
                 manual_text=manual_text if manual_text is not None else (text if not (files_text or []) else None),
@@ -196,17 +213,17 @@ def _run_analysis_pipeline(
         )
         raise HTTPException(status_code=500, detail=f"Extractor failed: {repr(e)}")
 
-    if not use_new_pipeline:
+    if not use_new_pipeline and not use_evi_extractor:
         extracted = consolidate_extraction(extracted)
     meta = extracted.setdefault("meta", {})
     meta["input_mode"] = input_mode
-    if __debug__ and not use_new_pipeline:
+    if __debug__ and not use_new_pipeline and not use_evi_extractor:
         assert isinstance((meta.get("consolidation") or {}), dict), "consolidation must exist before financials"
 
     if ingestion_meta:
         meta["ingestion"] = ingestion_meta
 
-    if use_new_pipeline and isinstance(meta.get("quality_gate"), dict):
+    if (use_new_pipeline or use_evi_extractor) and isinstance(meta.get("quality_gate"), dict):
         gate = meta.get("quality_gate") or {}
     else:
         gate = quality_gate(extracted, text, input_mode)
